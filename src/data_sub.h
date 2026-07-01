@@ -39,7 +39,9 @@ static const char* RL[5] = {
 inline int pctFromFraction(const String& v) {
   if (v.isEmpty()) return -1;
   float f = v.toFloat();
-  int p = (v.indexOf('.') >= 0) ? (int)(f * 100 + 0.5f) : (int)f;
+  // Round UP (ceil) to match how claude.ai shows "% used": a usage bar shouldn't
+  // under-report how close you are to a limit. (+0.999 = ceil for positive values.)
+  int p = (v.indexOf('.') >= 0) ? (int)(f * 100.0f + 0.999f) : (int)f;
   return constrain(p, 0, 100);
 }
 // The reset headers are absolute unix-epoch seconds. Store the epoch itself (not
