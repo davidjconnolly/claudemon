@@ -1,0 +1,31 @@
+# Wokwi config (read by the VS Code "Wokwi Simulator" extension and wokwi-cli).
+#
+# This selects WHICH built firmware the simulator runs. `pio run -e <env>` only
+# builds an artifact; the sim loads whatever firmware/elf below point at, so after
+# switching envs you must also switch these paths and Stop/Start the sim.
+#
+# Two builds:
+#   * wokwi    (LIVE)  — real Anthropic API over the sim's WiFi + the web /config
+#                        server. Needs an IoT Gateway with internet; the Private
+#                        Gateway (paid Wokwi Club) is reliable and also forwards
+#                        the device web server to http://localhost:9080. Creds come
+#                        from NVS or the gitignored src/secrets.h (seeded at boot).
+#                          pio run -e wokwi
+#   * emulator (FAKE)  — scripted data, NO network or keys, fully clickable. Free
+#                        Community License. Best for pure UI/interaction work.
+#                          pio run -e emulator
+#
+# >>> Currently set to the offline emulator (FAKE) build — the friendly default. <<<
+[wokwi]
+version = 1
+firmware = '.pio/build/emulator/firmware.bin'
+elf = '.pio/build/emulator/firmware.elf'
+
+# For live data in the sim, run `pio run -e wokwi` and swap the two lines above for
+# (needs an IoT Gateway with internet + creds in src/secrets.h or via /config):
+#   firmware = '.pio/build/wokwi/firmware.bin'
+#   elf      = '.pio/build/wokwi/firmware.elf'
+
+# Headless screenshot for CI / quick checks (wokwi-cli):
+#   wokwi-cli --timeout 7000 --screenshot-time 6000 --timeout-exit-code 0 \
+#             --screenshot-part lcd --screenshot-file screen.png .

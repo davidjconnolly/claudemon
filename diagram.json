@@ -1,0 +1,32 @@
+{
+  "version": 1,
+  "author": "CYD-Claudemon",
+  "editor": "wokwi",
+  "parts": [
+    { "type": "wokwi-esp32-devkit-v1", "id": "esp", "top": 0, "left": 0, "attrs": {} },
+    {
+      "type": "board-ili9341-cap-touch",
+      "id": "lcd",
+      "top": -120,
+      "left": 200,
+      "rotate": 90,
+      "attrs": {}
+    }
+  ],
+  "connections": [
+    ["esp:TX0", "$serialMonitor:RX", "", []],
+    ["esp:RX0", "$serialMonitor:TX", "", []],
+    ["lcd:VCC", "esp:3V3", "red", []],
+    ["lcd:GND", "esp:GND.1", "black", []],
+    ["lcd:MISO", "esp:D12", "green", []],
+    ["lcd:MOSI", "esp:D13", "blue", []],
+    ["lcd:SCK", "esp:D14", "yellow", []],
+    ["lcd:CS", "esp:D15", "orange", []],
+    ["lcd:D/C", "esp:D2", "purple", []],
+    ["lcd:RST", "esp:3V3", "red", []],
+    ["lcd:LED", "esp:D21", "white", []],
+    ["lcd:SDA", "esp:D27", "green", []],
+    ["lcd:SCL", "esp:D22", "yellow", []]
+  ],
+  "dependencies": {}
+}
