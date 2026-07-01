@@ -56,4 +56,4 @@ static constexpr unsigned long POLL_SUB_MS   = 60000;  // subscription rate-limi
 #define CLAUDE_CODE_CLIENT_ID "9d1c250a-e61b-44d9-88ed-5944d1962f5e"
 
 // GitHub repo for OTA (update to your fork before first release).
-#define OTA_REPO "davidjconnolly/CYD-Claudemon"
+#define OTA_REPO "davidjconnolly/claudemon"
