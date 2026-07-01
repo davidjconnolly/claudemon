@@ -38,7 +38,12 @@ jobs:
       - uses: actions/setup-python@v5
         with: { python-version: '3.x' }
       - run: pip install --upgrade platformio
-      - run: pio run -e cyd && cp .pio/build/cyd/firmware.bin claudemon-firmware.bin
+      - name: Build firmware stamped with the tag version
+        run: |
+          VER="${GITHUB_REF_NAME#v}"
+          export PLATFORMIO_BUILD_FLAGS='-DCLAUDEMON_VERSION=\"'"$VER"'\"'
+          pio run -e cyd
+          cp .pio/build/cyd/firmware.bin claudemon-firmware.bin
       - uses: softprops/action-gh-release@v2
         with:
           files: claudemon-firmware.bin
