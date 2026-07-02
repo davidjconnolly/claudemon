@@ -14,6 +14,7 @@ static int    lastView = -1;
 static int    lSessPct = -1, lWeekPct = -1;
 static long   lSessSig = LONG_MIN, lWeekSig = LONG_MIN;   // reset-line change signatures
 static long   lFoot = LONG_MIN;
+static int    lastTint = -1;                              // offline_ind::state() the bars are tinted for
 
 // "Sun 11:00 PM" for an absolute reset epoch (static, doesn't drift with the clock).
 inline String absReset(long epoch) {
@@ -70,6 +71,12 @@ inline void run() {
     ui::label("WEEKLY", 6, 108, COL_ACCENT2, 2);
   }
   if (view != 3) return;                    // static screens already drawn
+
+  // The pct labels + bars are tinted by data-freshness (grey until ONLINE). Force
+  // a repaint when that state flips, otherwise a bar drawn grey at boot (before the
+  // first successful poll registered) stays grey until the next pct change.
+  int tint = (int)offline_ind::state();
+  if (tint != lastTint) { lastTint = tint; lSessPct = lWeekPct = -1; }
 
   updateWindow(30,  lSessPct, lSessSig, u.sessionPct, ui::secsTo(u.sessionResetAt) / 60,
                "resets in " + fmtDuration(ui::secsTo(u.sessionResetAt)));

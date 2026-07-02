@@ -31,7 +31,9 @@
 bool otaFetchLatest(String& tag, String& url);
 void gotoPage(int delta);             // change the page shown on the device/sim
 extern volatile bool g_otaWebRequest;
+extern volatile bool g_otaInstallReq; // set true to flash the update the last check found
 extern volatile bool g_otaChecking;   // true while a web-initiated OTA check runs
+extern String        g_otaUrl;        // download URL of the last-found update ("" = none)
 
 namespace webcfg {
 
@@ -199,15 +201,20 @@ inline String statusHtml() {
     h += "</pre>";
   }
 
+  // If a check already found an update, start the button as "Update now"; otherwise
+  // it's "Check for update". Checking never installs — only "Update now" does.
   h += "<p><a class=btn id=bcfg href=/config>Edit configuration</a> "
-       "<a class=btn href=/settings>Device settings</a> "
-       "<button class=btn id=bupd onclick=\"checkUpd()\">Check for update</button></p>";
+       "<a class=btn href=/settings>Device settings</a> ";
+  h += g_otaUrl.length()
+         ? "<button class=btn id=bupd onclick=\"doUpd()\">Update now</button></p>"
+         : "<button class=btn id=bupd onclick=\"checkUpd()\">Check for update</button></p>";
   h += "<p class=muted>LAN-only and unauthenticated &mdash; anyone on this network can change settings.</p>";
   // Browser-side: spin the status + disable buttons while the device checks GitHub,
   // then poll /otastatus for the result. All work is in the browser; the device just
   // serves a tiny JSON flag.
   h += "<script>"
        "function nav(d){fetch('/nav?d='+d).then(function(r){return r.text();}).then(function(t){document.getElementById('pg').textContent=t;});}"
+       "function doUpd(){location.href='/install';}"
        "function checkUpd(){"
        "var u=document.getElementById('bupd'),c=document.getElementById('bcfg'),s=document.getElementById('otastat');"
        "u.disabled=true;c.style.pointerEvents='none';c.style.opacity=.5;"
@@ -216,7 +223,9 @@ inline String statusHtml() {
        "var iv=setInterval(function(){n++;"
        "fetch('/otastatus').then(function(r){return r.json();}).then(function(j){"
        "if(!j.checking){clearInterval(iv);s.textContent=j.status;u.disabled=false;"
-       "c.style.pointerEvents='';c.style.opacity='';}}).catch(function(){"
+       "c.style.pointerEvents='';c.style.opacity='';"
+       "if(j.available){u.textContent='Update now';u.onclick=doUpd;}"
+       "else{u.textContent='Check for update';u.onclick=checkUpd;}}}).catch(function(){"
        "clearInterval(iv);s.textContent='device may be updating - watch the screen, refresh shortly';});"
        "if(n>25){clearInterval(iv);u.disabled=false;c.style.pointerEvents='';c.style.opacity='';}},1000);}</script>";
   return h;
@@ -377,9 +386,12 @@ inline void handleNav() {
 }
 
 // Tiny JSON endpoint the browser polls while a check runs (drives the spinner).
+// `available` tells the page to switch the button to "Update now".
 inline void handleOtaStatus() {
   String j = "{\"checking\":";
   j += g_otaChecking ? "true" : "false";
+  j += ",\"available\":";
+  j += g_otaUrl.length() ? "true" : "false";
   j += ",\"status\":\"" + jsonEsc(otaStatusFriendly()) + "\"}";
   server.send(200, "application/json", j);
 }
@@ -413,15 +425,32 @@ inline void handleSave() {
   ESP.restart();
 }
 
+// "Check for update": only checks GitHub — it never installs. If a newer release
+// is found, the status page swaps its button to "Update now" (-> /install).
 inline void handleUpdate() {
   g_otaChecking   = true;     // set first so the very first /otastatus poll sees it
   g_otaWebRequest = true;
   String h = head("Update");
-  h.replace("<style>", "<meta http-equiv=refresh content='10;url=/'><style>");
-  h += "<h1>Update check requested</h1>";
-  h += "<p>The device is checking GitHub. If a newer release exists it will flash and reboot "
-       "(watch the screen) &mdash; <b>your settings are preserved</b>. Otherwise it keeps running. "
-       "Returning to status…</p>";
+  h.replace("<style>", "<meta http-equiv=refresh content='6;url=/'><style>");
+  h += "<h1>Checking for updates…</h1>";
+  h += "<p>Checking GitHub for a newer release. Nothing is installed by this step. Returning to status…</p>";
+  server.send(200, "text/html; charset=utf-8", h);
+}
+
+// "Update now": flash the update the last check found. Shows an updating page; the
+// device downloads + flashes (watch its screen) and reboots. Settings are preserved.
+inline void handleInstall() {
+  if (g_otaUrl.length()) g_otaInstallReq = true;
+  String h = head("Updating");
+  h.replace("<style>", "<meta http-equiv=refresh content='40;url=/'><style>");
+  if (g_otaUrl.length()) {
+    h += "<h1>Updating…</h1>";
+    h += "<p><b>Watch the device screen</b> and don't power it off. It's downloading and flashing the new "
+         "firmware, then reboots &mdash; <b>your settings are preserved</b>. This page returns to status shortly.</p>";
+  } else {
+    h += "<h1>Nothing to install</h1>";
+    h += "<p class=muted>No update has been found yet. Run <b>Check for update</b> first. Returning to status…</p>";
+  }
   server.send(200, "text/html; charset=utf-8", h);
 }
 
@@ -434,6 +463,7 @@ inline void begin() {
   server.on("/savesettings", HTTP_POST, handleSaveSettings);
   server.on("/save", HTTP_POST, handleSave);
   server.on("/update", handleUpdate);
+  server.on("/install", handleInstall);
   server.on("/otastatus", handleOtaStatus);
   server.on("/nav", handleNav);
   server.onNotFound([] { server.sendHeader("Location", "/"); server.send(302, "text/plain", ""); });

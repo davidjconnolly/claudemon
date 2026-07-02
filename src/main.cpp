@@ -80,8 +80,10 @@ uint16_t pageMask = 0xFFFF;   // which optional pages are shown (settings-toggle
 bool    otaAuto = false;      // auto-install newer firmware (opt-in; default off)
 
 #ifndef FAKE_DATA
-volatile bool g_otaWebRequest = false;   // set by the web /update route
+volatile bool g_otaWebRequest = false;   // web "Check for update" — check only (no install)
+volatile bool g_otaInstallReq = false;   // web "Update now" — flash the already-found update
 volatile bool g_otaChecking   = false;   // true while a web-initiated check runs (drives the UI spinner)
+String        g_otaUrl;                  // download URL of the last-found update ("" = none known)
 #endif
 
 unsigned long animNow() { return millis(); }
@@ -397,13 +399,17 @@ void loop() {
 
 #ifndef FAKE_DATA
   webcfg::handle();
-  if (g_otaWebRequest) {                 // web /update route was hit
+  if (g_otaWebRequest) {                 // web "Check for update" — check only, never install
     g_otaWebRequest = false;
     String tag, url;
     bool avail = otaFetchLatest(tag, url);
     applog::add("ota: %s", g_diag.otaMsg);
-    g_otaChecking = false;               // clear before the (blocking, rebooting) flash
-    if (avail) otaDownloadFlash(url);    // reboots on success
+    g_otaUrl = avail ? url : "";         // remember (or clear) the found update for "Update now"
+    g_otaChecking = false;
+  }
+  if (g_otaInstallReq) {                 // web "Update now" — flash the update the check found
+    g_otaInstallReq = false;
+    if (g_otaUrl.length()) otaDownloadFlash(g_otaUrl);   // reboots on success
   }
   static unsigned long tOtaCheck = 0;    // periodic check -> note availability, or auto-install
   if (millis() - tOtaCheck > 6UL * 3600UL * 1000UL) {
@@ -411,6 +417,7 @@ void loop() {
     String tag, url;
     if (otaFetchLatest(tag, url)) {
       applog::add("ota: %s", g_diag.otaMsg);
+      g_otaUrl = url;                    // surface it on the web UI as "Update now"
       if (otaAuto) {                     // opt-in auto-update: flash the newer release now
         applog::add("ota: auto-installing v%s", tag.c_str());
         otaDownloadFlash(url);           // reboots on success
