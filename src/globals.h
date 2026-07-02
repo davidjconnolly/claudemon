@@ -44,6 +44,7 @@ extern int64_t oauthExpiresMs;   // access-token expiry, ms since epoch
 extern String adminKey;          // admin API key sk-ant-admin01... (optional)
 extern double budgetWeeklyUsd;   // budget alert threshold in USD (0 = off)
 extern uint16_t pageMask;        // bit (1<<PageId) set = that optional page is shown
+extern bool  otaAuto;            // auto-install newer firmware (boot + ~6h check); default off
 
 // True when budget alerts should fire (computed from cost vs budget).
 bool budgetExceeded();

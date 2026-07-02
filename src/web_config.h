@@ -187,6 +187,8 @@ inline String statusHtml() {
 
   h += "<h2>Firmware updates</h2><table>";
   h += "<tr><td>Status</td><td id=otastat>" + esc(otaStatusFriendly()) + "</td></tr>";
+  h += "<tr><td>Auto-install</td><td>" + String(otaAuto ? "<span class=ok>on</span>" : "off") +
+       " &middot; <a href=/settings>change</a></td></tr>";
   h += "</table>";
 
   h += "<h2>Recent activity</h2>";
@@ -315,6 +317,11 @@ inline String settingsHtml() {
   h += "<label>Auto-cycle seconds (0 = off)</label>"
        "<input type=number name=cyc min=0 max=250 value='" + String(cycSec) + "'>"
        "<p class=muted>Seconds between automatic page advances; 0 keeps the current page.</p>";
+  h += "<label class=rm><input type=checkbox name=ota_auto" + String(otaAuto ? " checked" : "") +
+       ">Auto-install firmware updates</label>";
+  h += "<p class=muted>When on, a newer release is installed automatically &mdash; at boot and on the "
+       "~6-hourly check &mdash; instead of just being flagged. The device reboots to flash it; your "
+       "settings are kept. Off by default.</p>";
 
   h += "<h2>Pages shown</h2>";
   h += "<label class=rm><input type=checkbox name=pg_clock" + String((pageMask & (1 << PAGE_CLOCK)) ? " checked" : "") + ">Clock page</label>";
@@ -343,6 +350,7 @@ inline void handleSaveSettings() {
   uint16_t mask = pageMask;                          // checkbox present = on, absent = off
   if (server.hasArg("pg_clock"))  mask |=  (1 << PAGE_CLOCK);  else mask &= ~(1 << PAGE_CLOCK);
   if (server.hasArg("pg_system")) mask |=  (1 << PAGE_SYSTEM); else mask &= ~(1 << PAGE_SYSTEM);
+  otaAuto = server.hasArg("ota_auto");               // checkbox present = auto-update on
 
   setBrightness(nbri);
   setQuietHours(nqs, nqe, nqm);
@@ -352,6 +360,7 @@ inline void handleSaveSettings() {
   Preferences p; p.begin(NVS_NS, false);
   p.putUChar("rot", displayRotation);
   p.putUShort("pgmask", pageMask);
+  p.putBool("ota_auto", otaAuto);
   p.end();
   if (pagesChanged) buildPages();
   modeChanged = true;                                // redraw at the new rotation / page set
