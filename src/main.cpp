@@ -77,6 +77,7 @@ String  oauthToken, oauthRefresh, adminKey;
 int64_t oauthExpiresMs = 0;
 double  budgetWeeklyUsd = 0;
 uint16_t pageMask = 0xFFFF;   // which optional pages are shown (settings-toggled)
+bool    otaAuto = false;      // auto-install newer firmware (opt-in; default off)
 
 #ifndef FAKE_DATA
 volatile bool g_otaWebRequest = false;   // set by the web /update route
@@ -216,6 +217,7 @@ void setup() {
   if (displayRotation != ROT_LANDSCAPE && displayRotation != ROT_LANDSCAPE_F) displayRotation = ROT_LANDSCAPE;
   budgetWeeklyUsd = prefs.getDouble("budget", 0);
   pageMask        = prefs.getUShort("pgmask", 0xFFFF);
+  otaAuto         = prefs.getBool("ota_auto", false);
   prefs.end();
 
   // Seed any credential left unset in NVS from the optional dev secrets.h.
@@ -258,8 +260,28 @@ void setup() {
   WiFiManagerParameter pAt("oauth_at", "Subscription OAuth access token", oauthToken.c_str(), 1600);
   WiFiManagerParameter pRt("oauth_rt", "Subscription OAuth refresh token", oauthRefresh.c_str(), 600);
   WiFiManagerParameter pAk("admin_key", "Admin API key (sk-ant-admin01...)", adminKey.c_str(), 220);
-  WiFiManagerParameter pTz("tz", "Timezone (POSIX TZ)", tz.c_str(), 48);
-  wm.addParameter(&pAt); wm.addParameter(&pRt); wm.addParameter(&pAk); wm.addParameter(&pTz);
+  // Timezone as a friendly dropdown (same list the web /config page uses) instead
+  // of a raw POSIX text box. WiFiManager can't render a <select> for a param, so
+  // this <select> is display-only; its onchange copies the chosen POSIX string
+  // into the hidden 'tz' input, which is the field WiFiManager reads back. If the
+  // select is left untouched (or JS is off) the hidden input keeps the current
+  // value, so nothing is lost.
+  bool tzMatched = false;
+  for (int i = 0; i < webcfg::NTZ; i++) if (tz == webcfg::TZONES[i].tz) tzMatched = true;
+  String tzSelect = "<label for='tzsel'>Timezone</label>"
+                    "<select id='tzsel' onchange=\"document.getElementById('tz').value=this.value\">";
+  if (!tzMatched)   // keep an existing custom/unknown value selectable at the top
+    tzSelect += "<option value='" + webcfg::esc(tz) + "' selected>(current) " + webcfg::esc(tz) + "</option>";
+  for (int i = 0; i < webcfg::NTZ; i++) {
+    tzSelect += "<option value='" + String(webcfg::TZONES[i].tz) + "'";
+    if (tzMatched && tz == webcfg::TZONES[i].tz) tzSelect += " selected";
+    tzSelect += ">" + String(webcfg::TZONES[i].label) + "</option>";
+  }
+  tzSelect += "</select>";
+  WiFiManagerParameter pTzSel(tzSelect.c_str());                                       // dropdown (display only)
+  WiFiManagerParameter pTz("tz", NULL, tz.c_str(), 48, "type='hidden'", WFM_NO_LABEL); // value read-back
+  wm.addParameter(&pAt); wm.addParameter(&pRt); wm.addParameter(&pAk);
+  wm.addParameter(&pTzSel); wm.addParameter(&pTz);
   wm.setConfigPortalTimeout(300);
   if (!wm.autoConnect("CYD-Claudemon")) {
     bootSplash("WiFi failed - restarting");
@@ -383,11 +405,17 @@ void loop() {
     g_otaChecking = false;               // clear before the (blocking, rebooting) flash
     if (avail) otaDownloadFlash(url);    // reboots on success
   }
-  static unsigned long tOtaCheck = 0;    // silent periodic check -> g_diag.otaMsg
+  static unsigned long tOtaCheck = 0;    // periodic check -> note availability, or auto-install
   if (millis() - tOtaCheck > 6UL * 3600UL * 1000UL) {
     tOtaCheck = millis();
     String tag, url;
-    if (otaFetchLatest(tag, url)) applog::add("ota: %s", g_diag.otaMsg);
+    if (otaFetchLatest(tag, url)) {
+      applog::add("ota: %s", g_diag.otaMsg);
+      if (otaAuto) {                     // opt-in auto-update: flash the newer release now
+        applog::add("ota: auto-installing v%s", tag.c_str());
+        otaDownloadFlash(url);           // reboots on success
+      }
+    }
   }
 #endif
 
@@ -501,6 +529,12 @@ void checkOTA() {
   bool avail = otaFetchLatest(tag, url);
   applog::add("ota: %s", g_diag.otaMsg);
   if (!avail) return;
+
+  if (otaAuto) {                         // opt-in auto-update: install without prompting
+    applog::add("ota: auto-installing v%s", tag.c_str());
+    otaDownloadFlash(url);               // reboots on success
+    return;
+  }
 
   tft.fillScreen(COL_BG);
   tft.setTextDatum(MC_DATUM);

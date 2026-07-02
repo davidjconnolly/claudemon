@@ -49,7 +49,7 @@ So: if your day-to-day Claude Code runs on a **Max subscription**, the `USAGE` p
 - **Budget alert** — `OVER BUDGET` when weekly org spend crosses your threshold
 - **Flicker-free** — per-field change detection (only redraws what actually changed)
 - **Web config + status server** — `claudemon.local`: `/status`, editable `/config` and `/settings`, no reflash
-- **OTA self-update, captive-portal setup, quiet hours, auto-cycle, brightness / orientation**
+- **OTA self-update** (manual prompt, or opt-in fully automatic), captive-portal setup, quiet hours, auto-cycle, brightness / orientation
 - **`FAKE_DATA` + Wokwi + host renderer** — verify every screen before flashing
 
 ## Hardware
@@ -253,6 +253,11 @@ Also editable from a browser at **`claudemon.local/settings`**.
 | SAVE | tap | Persist |
 
 (The weekly **budget** and credentials / timezone live on `claudemon.local/config`, not here.)
+
+**Auto-install firmware updates** is a web-only toggle (`claudemon.local/settings` → *Behaviour*, off by default).
+When on, a newer release is flashed automatically — at boot and on the ~6-hourly check — instead of just being
+flagged on the status page; the device reboots to flash it and your settings are kept. Leave it off to keep the
+touch **YES/NO** prompt at boot (and the manual **Check for update** button on the status page).
 
 ---
 
