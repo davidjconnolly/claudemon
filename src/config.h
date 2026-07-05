@@ -38,7 +38,10 @@ static constexpr int TOUCH_RAW_MIN = 300;
 static constexpr int TOUCH_RAW_MAX = 3900;
 
 // --- Polling cadence (ms) ---
-static constexpr unsigned long POLL_ADMIN_MS = 60000;  // Usage&Cost API: data ~5min stale, <=1/min
+// Each admin tick makes TWO calls (the "today" call + one rotating heavier
+// call), so 120s averages the documented <=1/min. At 60s (2/min) the API's
+// hourly budget ran dry like clockwork: a 429 + ~6min of stale data every hour.
+static constexpr unsigned long POLL_ADMIN_MS = 120000; // Usage&Cost API: data ~5min stale anyway
 static constexpr unsigned long POLL_SUB_MS   = 60000;  // subscription rate-limit probe, fixed 60s.
                                                        // Each probe is ~1 token (or a free count_tokens),
                                                        // so a tight cadence keeps the % bars fresh cheaply.

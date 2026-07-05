@@ -14,8 +14,11 @@ namespace offline_ind {
 
 enum State { ONLINE, STALE, OFFLINE };
 
-static constexpr unsigned long STALE_AFTER_MS   = 90UL  * 1000UL;
-static constexpr unsigned long OFFLINE_AFTER_MS = 240UL * 1000UL;
+// Derived from the slowest poll cadence so a healthy admin-only device (one
+// success per POLL_ADMIN_MS) never dips into STALE between polls, and OFFLINE
+// means ~3 consecutive misses rather than a fixed wall-clock guess.
+static constexpr unsigned long STALE_AFTER_MS   = POLL_ADMIN_MS + 30UL * 1000UL;
+static constexpr unsigned long OFFLINE_AFTER_MS = 3UL * POLL_ADMIN_MS;
 
 static State         currentState   = OFFLINE;
 static unsigned long lastSuccessMs  = 0;
