@@ -20,6 +20,7 @@
 #include <WebServer.h>
 #include <ESPmDNS.h>
 #include <Preferences.h>
+#include <LittleFS.h>
 #include "config.h"
 #include "globals.h"
 #include "data_models.h"
@@ -200,6 +201,8 @@ inline String statusHtml() {
     for (int i = applog::size() - 1; i >= 0; i--) { h += esc(applog::at(i)); h += "\n"; }
     h += "</pre>";
   }
+  h += "<p class=muted>The log is flash-persisted and survives reboots &middot; "
+       "<a href=/logs>view full log</a> &middot; <a href=/logs.txt>download</a></p>";
 
   // If a check already found an update, start the button as "Update now"; otherwise
   // it's "Check for update". Checking never installs — only "Update now" does.
@@ -378,6 +381,62 @@ inline void handleSaveSettings() {
   server.send(303, "text/plain; charset=utf-8", "saved");
 }
 
+// ---- persistent log: full view + download ----
+// The full log can be tens of KB — far too big to build as a String in RAM —
+// so both handlers stream it in chunks.
+
+// Stream a file into the current chunked response, HTML-escaped.
+inline void streamFileEscaped(File& f) {
+  uint8_t buf[512]; int r;
+  while ((r = f.read(buf, sizeof buf)) > 0) {
+    String chunk; chunk.reserve(r + 16);
+    for (int i = 0; i < r; i++) {
+      char c = (char)buf[i];
+      if (c == '<')      chunk += "&lt;";
+      else if (c == '>') chunk += "&gt;";
+      else if (c == '&') chunk += "&amp;";
+      else               chunk += c;
+    }
+    server.sendContent(chunk);
+  }
+}
+
+// /logs — the current segment (all events since the last rotation); ?prev=1
+// shows the rotated previous segment instead.
+inline void handleLogs() {
+  bool prev = server.hasArg("prev");
+  File f = LittleFS.open(prev ? applog::OLD_PATH : applog::LOG_PATH, FILE_READ);
+  server.setContentLength(CONTENT_LENGTH_UNKNOWN);
+  server.send(200, "text/html; charset=utf-8", head("Log"));
+  String top = "<h1>Log</h1><p class=muted>";
+  top += prev ? "Previous segment (before the last rotation)."
+              : "Current segment &mdash; flash-persisted across reboots; rotates at 40 KB.";
+  if (!prev && LittleFS.exists(applog::OLD_PATH)) top += " <a href='/logs?prev=1'>View previous segment</a>.";
+  if (prev)                                       top += " <a href=/logs>Back to current</a>.";
+  top += "</p><pre>";
+  server.sendContent(top);
+  if (f) { streamFileEscaped(f); f.close(); }
+  else   server.sendContent("(no log file)");
+  server.sendContent("</pre><p><a class=btn href=/logs.txt>Download logs</a> <a class=btn href=/>Back</a></p>");
+  server.sendContent("");   // end of chunked response
+}
+
+// /logs.txt — download: previous segment (if any) then current, oldest first.
+inline void handleLogsTxt() {
+  server.setContentLength(CONTENT_LENGTH_UNKNOWN);
+  server.sendHeader("Content-Disposition", "attachment; filename=claudemon-log.txt");
+  server.send(200, "text/plain; charset=utf-8", "");
+  const char* paths[2] = { applog::OLD_PATH, applog::LOG_PATH };
+  for (int p = 0; p < 2; p++) {
+    File f = LittleFS.open(paths[p], FILE_READ);
+    if (!f) continue;
+    uint8_t buf[512]; int r;
+    while ((r = f.read(buf, sizeof buf)) > 0) server.sendContent((const char*)buf, (size_t)r);
+    f.close();
+  }
+  server.sendContent("");
+}
+
 // Change the page shown on the device/sim (Wokwi has no touch; also handy on HW).
 inline void handleNav() {
   int d = server.hasArg("d") ? server.arg("d").toInt() : 0;
@@ -465,6 +524,8 @@ inline void begin() {
   server.on("/update", handleUpdate);
   server.on("/install", handleInstall);
   server.on("/otastatus", handleOtaStatus);
+  server.on("/logs", handleLogs);
+  server.on("/logs.txt", handleLogsTxt);
   server.on("/nav", handleNav);
   server.onNotFound([] { server.sendHeader("Location", "/"); server.send(302, "text/plain", ""); });
   server.begin();

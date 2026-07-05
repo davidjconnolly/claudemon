@@ -84,6 +84,9 @@ volatile bool g_otaWebRequest = false;   // web "Check for update" — check onl
 volatile bool g_otaInstallReq = false;   // web "Update now" — flash the already-found update
 volatile bool g_otaChecking   = false;   // true while a web-initiated check runs (drives the UI spinner)
 String        g_otaUrl;                  // download URL of the last-found update ("" = none known)
+// Set from the WiFi event task on STA disconnect; logged by the loop-side
+// watchdog (applog isn't safe to call from another task).
+volatile uint8_t g_wifiLostReason = 0;
 #endif
 
 unsigned long animNow() { return millis(); }
@@ -169,6 +172,9 @@ void factoryReset() {
 #if !defined(FAKE_DATA) && !defined(WOKWI)
   WiFiManager wm; wm.resetSettings();   // clear stored WiFi (real hardware only)
 #endif
+#ifndef FAKE_DATA
+  applog::clearAll();                   // the log holds SSID/IP details — wipe it too
+#endif
   prefs.begin(NVS_NS, false); prefs.clear(); prefs.end();
   ESP.restart();
 }
@@ -194,6 +200,9 @@ void otaDownloadFlash(const String& url);
 
 void setup() {
   Serial.begin(115200);
+#ifndef FAKE_DATA
+  applog::init();   // mount the flash log first so every boot (and its reset reason) is recorded
+#endif
   tft.init();
 #ifdef WOKWI
   tft.invertDisplay(false);  // Wokwi's ILI9341 model is not pre-inverted...
@@ -311,7 +320,16 @@ void setup() {
   bootSplash("connected");
   delay(600);
 #ifndef FAKE_DATA
-  applog::add("booted v%s, ip %s", CLAUDEMON_VERSION, WiFi.localIP().toString().c_str());
+  // Harden the connection: keep the radio awake (modem sleep makes the device
+  // intermittently unreachable on some APs) and make auto-reconnect explicit.
+  // The loop watchdog below handles the cases auto-reconnect gets stuck on.
+  WiFi.setAutoReconnect(true);
+  WiFi.setSleep(false);
+  WiFi.onEvent([](WiFiEvent_t, WiFiEventInfo_t info) {
+    g_wifiLostReason = info.wifi_sta_disconnected.reason;
+  }, ARDUINO_EVENT_WIFI_STA_DISCONNECTED);
+  applog::add("wifi: connected %s, ip %s, %d dBm", WiFi.SSID().c_str(),
+              WiFi.localIP().toString().c_str(), (int)WiFi.RSSI());
   #ifndef WOKWI
   checkOTA();         // boot update prompt — hardware only (skips the Wokwi TLS hang)
   #endif
@@ -363,7 +381,10 @@ void handleTouch() {
     settings_ui::cancelHold();
     if (elapsed < 300 && abs(dx) < 20) {
       if (lastX >= ui::CHROME_ZONE_X && lastY <= ui::CHROME_ZONE_Y) {   // X -> close
-        settings_ui::exit(); g_settingsOpen = false; modeChanged = true; chromeDirty = true;
+        // The log viewer consumes the first X (back to the list); otherwise close.
+        if (!settings_ui::handleCloseTap()) {
+          settings_ui::exit(); g_settingsOpen = false; modeChanged = true; chromeDirty = true;
+        }
       } else {
         settings_ui::handleTap(tft, lastY, lastX);
       }
@@ -398,6 +419,32 @@ void loop() {
   poller::tick();
 
 #ifndef FAKE_DATA
+  // --- WiFi watchdog: auto-reconnect can wedge after an AP hiccup (observed as
+  //     grey bars + red dot + device unreachable until power-cycled). Log the
+  //     drop with its reason code, nudge a reconnect every 30 s, and reboot
+  //     after 5 minutes down as the last resort — all flash-logged, so the
+  //     story survives the reboot. ---
+  static unsigned long wifiDownAt = 0, wifiRetryAt = 0;
+  if (WiFi.status() != WL_CONNECTED) {
+    if (!wifiDownAt) {
+      wifiDownAt = wifiRetryAt = millis();
+      applog::add("wifi: lost (reason %d)", (int)g_wifiLostReason);
+      WiFi.reconnect();
+    } else if (millis() - wifiRetryAt >= 30000UL) {
+      wifiRetryAt = millis();
+      WiFi.reconnect();
+    }
+    if (millis() - wifiDownAt >= 5UL * 60UL * 1000UL) {
+      applog::add("wifi: down 5 min - restarting");
+      delay(200);
+      ESP.restart();
+    }
+  } else if (wifiDownAt) {
+    wifiDownAt = 0;
+    applog::add("wifi: reconnected, ip %s, %d dBm",
+                WiFi.localIP().toString().c_str(), (int)WiFi.RSSI());
+  }
+
   webcfg::handle();
   if (g_otaWebRequest) {                 // web "Check for update" — check only, never install
     g_otaWebRequest = false;

@@ -49,6 +49,8 @@ So: if your day-to-day Claude Code runs on a **Max subscription**, the `USAGE` p
 - **Budget alert** — `OVER BUDGET` when weekly org spend crosses your threshold
 - **Flicker-free** — per-field change detection (only redraws what actually changed)
 - **Web config + status server** — `claudemon.local`: `/status`, editable `/config` and `/settings`, no reflash
+- **Persistent event log** — flash-backed, survives reboots and power cycles; boots are stamped with the reset reason and WiFi drops/reconnects are logged. View/download at `/logs` / `/logs.txt`, or on-device via `SETTINGS → VIEW LOGS`
+- **WiFi watchdog** — logs a lost connection (with reason code), retries every 30 s, reboots after 5 min down as a last resort
 - **OTA self-update** (manual prompt, or opt-in fully automatic), captive-portal setup, quiet hours, auto-cycle, brightness / orientation
 - **`FAKE_DATA` + Wokwi + host renderer** — verify every screen before flashing
 
