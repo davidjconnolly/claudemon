@@ -24,7 +24,7 @@ jobs:
           # `claude setup-token`), NOT an Anthropic API key. Store it as the
           # CLAUDE_CODE_OAUTH_TOKEN repo secret — see the workflow notes below.
           claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
-          claude_args: "--max-turns 30"   # reviewing several files + posting needs headroom
+          claude_args: --max-turns 30 --allowedTools "Bash(gh pr review:*)"
           prompt: |
             Review this pull request and leave concise, actionable feedback as
             PR review comments. This is an ESP32 / Arduino firmware project built
@@ -37,3 +37,11 @@ jobs:
               - consistency with the idioms and style of the surrounding code
             Skip nitpicks and praise; only flag things worth changing. If the
             diff looks clean, say so briefly.
+
+            Then submit a formal review verdict:
+            - If there are NO blocking issues (nothing that must be fixed before
+              merge — style nits and optional suggestions don't block), approve:
+              gh pr review ${{ github.event.pull_request.number }} --repo ${{ github.repository }} --approve --body "<one-line summary of why it's mergeable>"
+            - If there ARE blocking issues, do NOT approve. Your comments stand as
+              the verdict and the required-review check stays unsatisfied until a
+              clean revision is pushed.
