@@ -169,15 +169,16 @@ later and the cost pages light up — no reflash):
 
 #### OAuth access + refresh tokens (`USAGE` page)
 
-Your Claude Code OAuth credentials live in **one of two places** on macOS depending on version — try the
-file first, then the Keychain. Run in a terminal and copy the two printed values into the portal:
+On **macOS**, current Claude Code versions store credentials only in the **Keychain** (the old
+`~/.claude/.credentials.json` file is no longer written). Run in a terminal — click **Allow** on the
+Keychain prompt — and copy the two printed values into the portal:
 
 ```bash
-# A) credentials file
-python3 -c "import json,os;o=json.load(open(os.path.expanduser('~/.claude/.credentials.json')))['claudeAiOauth'];print('ACCESS :',o['accessToken']);print('REFRESH:',o['refreshToken'])"
-
-# B) macOS Keychain (newer Claude Code) — or open Keychain Access.app and search 'Claude'
+# macOS Keychain — or open Keychain Access.app and search 'Claude'
 security find-generic-password -s "Claude Code-credentials" -w | python3 -c "import json,sys;o=json.load(sys.stdin)['claudeAiOauth'];print('ACCESS :',o['accessToken']);print('REFRESH:',o['refreshToken'])"
+
+# Linux (or older macOS Claude Code): credentials file
+python3 -c "import json,os;o=json.load(open(os.path.expanduser('~/.claude/.credentials.json')))['claudeAiOauth'];print('ACCESS :',o['accessToken']);print('REFRESH:',o['refreshToken'])"
 ```
 
 Access token looks like `sk-ant-oat01-…`, refresh like `sk-ant-ort01-…`. The access token expires every few

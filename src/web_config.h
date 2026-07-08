@@ -183,9 +183,10 @@ inline String statusHtml() {
     h += "<p class=muted>The subscription OAuth token is the same login as the Claude Code on your "
          "computer, and Claude uses single-use (rotating) refresh tokens: when your Claude Code "
          "refreshes, the copy stored on the device is invalidated, so this can recur. To restore "
-         "USAGE, re-enter the current tokens at <a href=/config>/config</a> &mdash; from "
-         "<code>~/.claude/.credentials.json</code> &rarr; <code>claudeAiOauth</code>, or the macOS "
-         "Keychain item <code>Claude Code-credentials</code>.</p>";
+         "USAGE, re-enter the current tokens at <a href=/config>/config</a> &mdash; from the macOS "
+         "Keychain item <code>Claude Code-credentials</code>, or "
+         "<code>~/.claude/.credentials.json</code> &rarr; <code>claudeAiOauth</code> on Linux / "
+         "older Claude Code.</p>";
   }
 
   h += "<h2>Firmware updates</h2><table>";
@@ -267,10 +268,12 @@ inline String configHtml() {
     h += "<label class=rm><input type=checkbox name=oauth_clear>remove both OAuth tokens (turns off USAGE)</label>";
   h += "<details><summary>Where do I get the OAuth tokens?</summary><p class=muted>"
        "Your Claude Code subscription credentials, on the computer where Claude Code is signed in.<br>"
-       "File: <code>~/.claude/.credentials.json</code> &rarr; <code>claudeAiOauth.accessToken</code> / "
-       "<code>.refreshToken</code> &mdash; or macOS Keychain item <code>Claude Code-credentials</code>.<br>"
-       "Quick (macOS): <code>python3 -c \"import json,os;o=json.load(open(os.path.expanduser("
-       "'~/.claude/.credentials.json')))['claudeAiOauth'];print(o['accessToken']);print(o['refreshToken'])\"</code>"
+       "macOS: Keychain item <code>Claude Code-credentials</code> &mdash; "
+       "<code>security find-generic-password -s \"Claude Code-credentials\" -w | python3 -c \"import json,sys;"
+       "o=json.load(sys.stdin)['claudeAiOauth'];print(o['accessToken']);print(o['refreshToken'])\"</code> "
+       "(click Allow on the Keychain prompt).<br>"
+       "Linux / older Claude Code: <code>~/.claude/.credentials.json</code> &rarr; "
+       "<code>claudeAiOauth.accessToken</code> / <code>.refreshToken</code>."
        "</p></details>";
 
   h += "<label>Timezone</label><select name=tz_preset>";
