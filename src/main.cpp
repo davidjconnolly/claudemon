@@ -200,6 +200,13 @@ void otaDownloadFlash(const String& url);
 
 void setup() {
   Serial.begin(115200);
+  // Apply the saved timezone before the first log line: across a software reset
+  // the RTC still holds valid time, and without TZ the boot entry stamps as UTC.
+  prefs.begin(NVS_NS, true);
+  String tz = prefs.getString("tz", "UTC0");
+  prefs.end();
+  setenv("TZ", tz.c_str(), 1);
+  tzset();
 #ifndef FAKE_DATA
   applog::init();   // mount the flash log first so every boot (and its reset reason) is recorded
 #endif
@@ -223,7 +230,6 @@ void setup() {
   oauthRefresh   = prefs.getString("oauth_rt", "");
   oauthExpiresMs = prefs.getLong64("oauth_exp", 0);
   adminKey       = prefs.getString("admin_key", "");
-  String tz      = prefs.getString("tz", "UTC0");
   displayRotation = prefs.getUChar("rot", ROT_LANDSCAPE);
   if (displayRotation != ROT_LANDSCAPE && displayRotation != ROT_LANDSCAPE_F) displayRotation = ROT_LANDSCAPE;
   budgetWeeklyUsd = prefs.getDouble("budget", 0);
