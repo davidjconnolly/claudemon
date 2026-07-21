@@ -28,7 +28,14 @@ inline bool refresh(String& accessToken, String& refreshToken, int64_t& expiresM
   req["grant_type"]    = "refresh_token";
   req["refresh_token"] = refreshToken.c_str();
   req["client_id"]     = CLAUDE_CODE_CLIENT_ID;
-  char body[512]; serializeJson(req, body, sizeof(body));
+  // serializeJson truncates silently on overflow -> malformed JSON and an
+  // inscrutable refresh failure; check the measured size first.
+  char body[768];
+  if (measureJson(req) >= sizeof(body)) {
+    applog::add("oauth: refresh request too large");
+    return false;
+  }
+  serializeJson(req, body, sizeof(body));
 
   net::Header hdrs[] = {{"Content-Type", "application/json"}};
   String resp;

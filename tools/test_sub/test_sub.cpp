@@ -196,6 +196,22 @@ int main() {
   CHECK(!u.limited);
   CHECK(sub::working == 0);
 
+  // --- partial limits[] (session only): the missing weekly window fills from
+  //     the top-level seven_day object instead of staying stale ---
+  sub::working = -1;
+  u.weeklyPct = 77;                              // stale value that must be replaced
+  install(200,
+          "{\"five_hour\":{\"utilization\":48.0,\"resets_at\":\"2026-07-21T18:40:00+00:00\"},"
+          "\"seven_day\":{\"utilization\":22.0,\"resets_at\":\"2026-07-27T03:00:00+00:00\"},"
+          "\"limits\":[{\"kind\":\"session\",\"group\":\"session\",\"percent\":48,"
+          "\"severity\":\"normal\",\"resets_at\":\"2026-07-21T18:40:00+00:00\",\"scope\":null,\"is_active\":true}]}",
+          404, "");
+  CHECK(sub::poll(u));
+  CHECK(u.sessionPct == 48);                     // from limits[]
+  CHECK(u.weeklyPct == 22);                      // from the top-level fallback
+  CHECK(u.weeklyResetAt == hostEpoch(2026, 7, 27, 3, 0, 0));
+  CHECK(sub::working == 0);
+
   // --- 100% in the fallback shape must also raise the limited flag ---
   install(200,
           "{\"five_hour\":{\"utilization\":100.0,\"resets_at\":\"2026-07-21T18:40:00+00:00\"},"

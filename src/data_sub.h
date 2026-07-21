@@ -132,16 +132,20 @@ inline int probeUsage(SessionUsage& u, bool& got) {
     }
     if ((l["percent"] | 0) >= 100) lim = true;   // pre-clamp value
   }
-  // Robustness: if limits[] was absent/empty, fall back to the top-level
-  // five_hour/seven_day objects (utilization is already a percent here).
-  if (!sawSession && !sawWeekly) {
-    JsonObjectConst fh = doc["five_hour"], sd = doc["seven_day"];
+  // Robustness: fill any window missing from limits[] from the top-level
+  // five_hour/seven_day objects (utilization is already a percent there) —
+  // per-window, so a partial limits[] can't pass a stale window off as fresh.
+  if (!sawSession) {
+    JsonObjectConst fh = doc["five_hour"];
     if (!fh.isNull()) {
       int p = constrain((int)(fh["utilization"].as<float>() + 0.5f), 0, 100);
       u.sessionPct = p; if (p >= 100) lim = true;
       long r = net::parseIso8601Utc(fh["resets_at"] | ""); if (r > 0) u.sessionResetAt = r;
       sawSession = true;
     }
+  }
+  if (!sawWeekly) {
+    JsonObjectConst sd = doc["seven_day"];
     if (!sd.isNull()) {
       int p = constrain((int)(sd["utilization"].as<float>() + 0.5f), 0, 100);
       u.weeklyPct = p; if (p >= 100) lim = true;
