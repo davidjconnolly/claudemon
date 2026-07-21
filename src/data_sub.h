@@ -233,6 +233,10 @@ inline bool poll(SessionUsage& u) {
   if (oauthToken.isEmpty()) return false;
   oauth::refreshIfNeeded(oauthToken, oauthRefresh, oauthExpiresMs);
 
+  // Advance the upgrade-retry clock once per poll TICK — not inside
+  // runStrategies(), which the auth-error path below can invoke twice.
+  if (working > 0) downgradedPolls++;
+
   auto tryStrategy = [&](int s) -> int {
     bool got = false;
     int code = (s == 0) ? probeUsage(u, got)
@@ -260,7 +264,7 @@ inline bool poll(SessionUsage& u) {
     // doesn't hide the model-scoped bar until the next reboot. Runs BEFORE the
     // known-good strategy so a failed retry's HTTP code is overwritten by the
     // real result below.
-    if (working > 0 && ++downgradedPolls >= UPGRADE_RETRY_POLLS) {
+    if (working > 0 && downgradedPolls >= UPGRADE_RETRY_POLLS) {
       downgradedPolls = 0;
       int r = tryStrategy(0);
       if (r == 1) return true;            // back on the usage endpoint
