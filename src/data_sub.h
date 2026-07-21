@@ -249,6 +249,7 @@ inline bool poll(SessionUsage& u) {
       // fires. Log them here (this is how a vanished Fable bar gets diagnosed).
       if (working != s) applog::add("usage: strategy %d (was %d, HTTP %d)", s, working, code);
       working = s;
+      if (s == 0) downgradedPolls = 0;  // any path back to strategy 0 resets the retry clock
       return 1;
     }
     return 0;
@@ -267,7 +268,7 @@ inline bool poll(SessionUsage& u) {
     }
     if (working >= 0) {                   // use the known-good strategy
       int r = tryStrategy(working);
-      if (r == 1) { if (working == 0) downgradedPolls = 0; return true; }
+      if (r == 1) return true;
       if (r < 0)  return false;           // auth error
       working = -1;                       // it stopped working; rediscover
     }
