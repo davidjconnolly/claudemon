@@ -22,6 +22,13 @@ inline void fill(AppData& d) {
   d.sub.sessionResetAt = (long)time(nullptr) + (300 - phase);
   d.sub.weeklyResetAt  = (long)time(nullptr) + (3 * 86400 + 4 * 3600 + (300 - phase));
   d.sub.limited        = d.sub.sessionPct >= 90;
+  d.sub.authError      = false;
+  // Model-scoped weekly window + plan label, as a Max plan reports them.
+  d.sub.hasScoped      = true;
+  d.sub.scopedPct      = 14 + (int)((t / 60) % 18);
+  d.sub.scopedResetAt  = d.sub.weeklyResetAt;
+  strncpy(d.sub.scopedLabel, "Fable", sizeof(d.sub.scopedLabel) - 1);
+  strncpy(d.sub.plan, "MAX 5x", sizeof(d.sub.plan) - 1);
   d.sub.lastUpdated    = millis();
 
   // --- Console cost/tokens ---

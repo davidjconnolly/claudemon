@@ -63,6 +63,26 @@ inline String iso8601(time_t t) {
   return String(buf);
 }
 
+// Days since 1970-01-01 for a civil UTC date (Howard Hinnant's algorithm).
+inline long civilDays(int y, int m, int d) {
+  y -= (m <= 2);
+  long era = (y >= 0 ? y : y - 399) / 400;
+  long yoe = y - era * 400;
+  long doy = (153 * (m + (m > 2 ? -3 : 9)) + 2) / 5 + d - 1;
+  long doe = yoe * 365 + yoe / 4 - yoe / 100 + doy;
+  return era * 146097L + doe - 719468L;
+}
+
+// "YYYY-MM-DDTHH:MM:SS[.frac][Z|+00:00]" -> unix epoch seconds; 0 on failure.
+// Fractional seconds and the offset are ignored — the endpoints we read always
+// return UTC (+00:00), so no offset math is needed (mktime/timegm are unreliable
+// on ESP32, hence the civil-days route).
+inline long parseIso8601Utc(const char* s) {
+  int y, mo, d, h, mi, se;
+  if (!s || sscanf(s, "%d-%d-%dT%d:%d:%d", &y, &mo, &d, &h, &mi, &se) != 6) return 0;
+  return civilDays(y, mo, d) * 86400L + h * 3600L + mi * 60L + se;
+}
+
 // Midnight UTC of the day containing `t`.
 inline time_t startOfDayUtc(time_t t) { return t - (t % 86400); }
 

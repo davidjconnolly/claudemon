@@ -140,5 +140,11 @@ int main() {
   shot(0, "alt_usage_expired", []{ page_session::run(); });
   g_data.sub.valid = false;
   shot(0, "alt_usage_nodata", []{ page_session::run(); });
+
+  // two-window USAGE layout (plan without a model-scoped weekly bar / no plan label)
+  fake::fill(g_data);
+  g_data.sub.hasScoped = false;
+  g_data.sub.plan[0] = 0;
+  shot(0, "alt_usage_two", []{ page_session::run(); });
   return 0;
 }

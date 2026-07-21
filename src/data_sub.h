@@ -1,21 +1,26 @@
 // data_sub.h — subscription rate-limit window source (OAuth token).
 //
-// Reads the unified 5h/7d utilization+reset headers. There is no documented
-// read-only way to get these, so we try strategies cheapest-first and remember
-// the first that actually returns the unified headers:
+// Reads the 5h/7d utilization windows (plus the model-scoped weekly window and
+// plan label on Max plans). There is no documented read-only way to get these,
+// so we try strategies cheapest-first and remember the first that works:
 //
-//   A) count_tokens probe  — free, separate limit; MAY return the headers without
-//                            opening a session (the hoped-for zero-cost path).
-//   B) messages probe      — costs ~1 token and opens/refreshes a 5h session;
+//   0) usage endpoint      — the (undocumented) GET the claude.ai usage page
+//                            reads. Free, and does NOT open/refresh a 5h
+//                            session. Also the only source of the model-scoped
+//                            weekly window (e.g. "Fable"). Shape confirmed
+//                            live 2026-07; guarded so a shape change just
+//                            falls through to the probes below.
+//   1) count_tokens probe  — free, separate limit; MAY return the unified
+//                            headers without opening a session.
+//   2) messages probe      — costs ~1 token and opens/refreshes a 5h session;
 //                            the proven fallback (this is what the daemon did).
-//
-// (A future strategy 0 — the undocumented usage endpoint the web page uses —
-//  would slot in front of these once its shape is confirmed; see README.)
 //
 // The poller gates *when* we probe (adaptive cadence) to minimise session opens.
 #pragma once
 
 #include <Arduino.h>
+#include <ArduinoJson.h>
+#include <ctype.h>
 #include "config.h"
 #include "globals.h"
 #include "net_http.h"
@@ -25,7 +30,7 @@ namespace sub {
 
 // true after a 401/403 — the UI shows a "reconfigure token" hint.
 static bool authError = false;
-// remembered working strategy: -1 unknown, 0 count_tokens, 1 messages
+// remembered working strategy: -1 unknown, 0 usage endpoint, 1 count_tokens, 2 messages
 static int  working = -1;
 
 static const char* RL[5] = {
@@ -89,6 +94,116 @@ inline int probe(const char* path, const String& body, SessionUsage& u, bool& go
 static const char* COUNT_BODY = "{\"model\":\"claude-haiku-4-5\",\"messages\":[{\"role\":\"user\",\"content\":\".\"}]}";
 static const char* MSG_BODY   = "{\"model\":\"claude-haiku-4-5\",\"max_tokens\":1,\"messages\":[{\"role\":\"user\",\"content\":\".\"}]}";
 
+// Strategy 0: the usage endpoint. Response shape (confirmed live 2026-07):
+// top-level five_hour/seven_day objects (utilization is a PERCENT float, not a
+// 0..1 fraction like the headers) plus a limits[] array. Model-scoped weekly
+// buckets (the "Fable" bar on Max plans) appear ONLY in limits[] as
+// kind=="weekly_scoped" with scope.model.display_name — the top-level
+// seven_day_<model> fields were all null on a plan that shows a Fable bar.
+inline int probeUsage(SessionUsage& u, bool& got) {
+  got = false;
+  String url = String("https://") + ANTHROPIC_HOST + OAUTH_USAGE_PATH;
+  net::Header hdrs[] = {
+    {"Authorization",  String("Bearer ") + oauthToken},
+    {"anthropic-beta", OAUTH_BETA_HDR},
+  };
+  String body;
+  int code = net::get(url, hdrs, 2, body);
+  if (code != 200) return code;
+
+  JsonDocument doc;
+  if (deserializeJson(doc, body)) return code;   // got stays false -> fall through
+
+  bool sawSession = false, sawWeekly = false, sawScoped = false, lim = false;
+  for (JsonObjectConst l : doc["limits"].as<JsonArrayConst>()) {
+    const char* kind = l["kind"] | "";
+    int  pct = l["percent"] | -1;
+    long rst = net::parseIso8601Utc(l["resets_at"] | "");
+    if (pct < 0) continue;
+    pct = constrain(pct, 0, 100);
+    if (strcmp(kind, "session") == 0) {
+      u.sessionPct = pct; if (rst > 0) u.sessionResetAt = rst; sawSession = true;
+    } else if (strcmp(kind, "weekly_all") == 0) {
+      u.weeklyPct = pct;  if (rst > 0) u.weeklyResetAt = rst;  sawWeekly = true;
+    } else if (strcmp(kind, "weekly_scoped") == 0) {
+      const char* name = l["scope"]["model"]["display_name"] | "Model";
+      snprintf(u.scopedLabel, sizeof(u.scopedLabel), "%s", name);
+      u.scopedPct = pct;  if (rst > 0) u.scopedResetAt = rst;  sawScoped = true;
+    }
+    if ((l["percent"] | 0) >= 100) lim = true;   // pre-clamp value
+  }
+  // Robustness: if limits[] was absent/empty, fall back to the top-level
+  // five_hour/seven_day objects (utilization is already a percent here).
+  if (!sawSession && !sawWeekly) {
+    JsonObjectConst fh = doc["five_hour"], sd = doc["seven_day"];
+    if (!fh.isNull()) {
+      u.sessionPct = constrain((int)(fh["utilization"].as<float>() + 0.5f), 0, 100);
+      long r = net::parseIso8601Utc(fh["resets_at"] | ""); if (r > 0) u.sessionResetAt = r;
+      sawSession = true;
+    }
+    if (!sd.isNull()) {
+      u.weeklyPct = constrain((int)(sd["utilization"].as<float>() + 0.5f), 0, 100);
+      long r = net::parseIso8601Utc(sd["resets_at"] | ""); if (r > 0) u.weeklyResetAt = r;
+      sawWeekly = true;
+    }
+  }
+  if (!sawSession && !sawWeekly) return code;    // unrecognised shape -> fall through
+
+  // The endpoint has no explicit "limited" flag like the unified-status header;
+  // a window at 100% is the same signal. (severity values beyond "normal" are
+  // unconfirmed, so we don't key off them.)
+  u.limited     = lim;
+  u.hasScoped   = sawScoped;                     // clears if the plan loses the bar
+  u.valid       = true;
+  u.lastUpdated = millis();
+  got = true;
+  return code;
+}
+
+// --- Plan label (e.g. "MAX 5x") from the profile endpoint. -----------------
+
+// "default_claude_max_5x" + "claude_max" -> "MAX 5x". Falls back to the raw
+// tier string if the shape is unrecognised, so a new plan still shows something.
+inline void planLabel(const char* tier, const char* type, char* out, size_t n) {
+  const char* base = strstr(type, "max")  ? "MAX"
+                   : strstr(type, "pro")  ? "PRO"
+                   : strstr(type, "free") ? "FREE" : "";
+  const char* mult = nullptr;                    // trailing "_<digits>x" segment
+  const char* seg  = strrchr(tier, '_');
+  if (seg && isdigit((unsigned char)seg[1])) {
+    const char* p = seg + 1;
+    while (isdigit((unsigned char)*p)) p++;
+    if (*p == 'x' && p[1] == '\0') mult = seg + 1;
+  }
+  if (base[0] && mult) snprintf(out, n, "%s %s", base, mult);
+  else if (base[0])    snprintf(out, n, "%s", base);
+  else                 snprintf(out, n, "%s", tier);
+}
+
+// Fetch the plan label once a day (retry hourly on failure). Cheap single GET;
+// purely cosmetic, so failures never affect the usage reading.
+inline void refreshPlan(SessionUsage& u) {
+  static unsigned long lastMs = 0, intervalMs = 0;   // 0 = due now
+  if (intervalMs != 0 && millis() - lastMs < intervalMs) return;
+  lastMs = millis();
+  intervalMs = 60UL * 60UL * 1000UL;                 // assume failure; 1h retry
+
+  String url = String("https://") + ANTHROPIC_HOST + OAUTH_PROFILE_PATH;
+  net::Header hdrs[] = {
+    {"Authorization",  String("Bearer ") + oauthToken},
+    {"anthropic-beta", OAUTH_BETA_HDR},
+  };
+  String body;
+  if (net::get(url, hdrs, 2, body) != 200) return;
+  JsonDocument doc;
+  if (deserializeJson(doc, body)) return;
+  const char* tier = doc["organization"]["rate_limit_tier"]   | "";
+  const char* type = doc["organization"]["organization_type"] | "";
+  if (!tier[0] && !type[0]) return;
+  planLabel(tier, type, u.plan, sizeof(u.plan));
+  intervalMs = 24UL * 60UL * 60UL * 1000UL;          // success; re-check daily
+}
+
 // Run one reading. Ensures a fresh token first. Returns true on success.
 inline bool poll(SessionUsage& u) {
   if (oauthToken.isEmpty()) return false;
@@ -96,13 +211,15 @@ inline bool poll(SessionUsage& u) {
 
   auto tryStrategy = [&](int s) -> int {
     bool got = false;
-    int code = (s == 0) ? probe(COUNT_TOKENS_PATH, COUNT_BODY, u, got)
+    int code = (s == 0) ? probeUsage(u, got)
+             : (s == 1) ? probe(COUNT_TOKENS_PATH, COUNT_BODY, u, got)
                         : probe(MESSAGES_PATH,    MSG_BODY,   u, got);
     g_diag.subLastCode = code;
     if (code == 401 || code == 403) { authError = true; return -code; }
     authError = false;
-    if (code == 200 && got) { working = s; return 1; }
-    if (code == 429)        { working = s; return 1; }  // limited, but headers valid
+    // `got` covers both a parsed 200 and (for the probes) a 429 whose unified
+    // headers were still present.
+    if (got) { working = s; return 1; }
     return 0;
   };
 
@@ -113,7 +230,7 @@ inline bool poll(SessionUsage& u) {
       if (r < 0)  return false;           // auth error
       working = -1;                       // it stopped working; rediscover
     }
-    for (int s = 0; s <= 1; s++) {        // discover cheapest working strategy
+    for (int s = 0; s <= 2; s++) {        // discover cheapest working strategy
       int r = tryStrategy(s);
       if (r == 1) return true;
       if (r < 0)  return false;
@@ -128,6 +245,8 @@ inline bool poll(SessionUsage& u) {
   // giving up, so the device self-heals whenever its refresh token is still good.
   if (!ok && authError && oauth::refresh(oauthToken, oauthRefresh, oauthExpiresMs))
     ok = runStrategies();
+
+  if (ok) refreshPlan(u);                 // cosmetic; never affects the reading
 
   u.authError = authError;                // surface for the UI banner
   return ok;

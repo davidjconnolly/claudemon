@@ -82,20 +82,12 @@ inline String pageEncode(const String& s) {
   return o;
 }
 
-// Days since 1970-01-01 for a civil UTC date (Howard Hinnant's algorithm).
-inline long civilDays(int y, int m, int d) {
-  y -= (m <= 2);
-  long era = (y >= 0 ? y : y - 399) / 400;
-  long yoe = y - era * 400;
-  long doy = (153 * (m + (m > 2 ? -3 : 9)) + 2) / 5 + d - 1;
-  long doe = yoe * 365 + yoe / 4 - yoe / 100 + doy;
-  return era * 146097L + doe - 719468L;
-}
 // Day index (days since epoch) from an ISO-8601 "YYYY-MM-DD…" string; -1 on fail.
+// (civilDays lives in net_http.h so the subscription source can share it.)
 inline long isoDayIndex(const char* s) {
   int y, m, d;
   if (!s || sscanf(s, "%d-%d-%d", &y, &m, &d) != 3) return -1;
-  return civilDays(y, m, d);
+  return net::civilDays(y, m, d);
 }
 
 // Fetch every page of a usage/cost query, invoking onBucket(bucket) for each time
@@ -193,7 +185,7 @@ inline bool fetchCostMonth(CostUsage& c, Sparkline& s) {
   long daysBack = (monthDays - 1 > 7) ? (monthDays - 1) : 7;
   time_t rangeStart = net::startOfDayUtc(now) - daysBack * 86400;
 
-  long todayIdx = civilDays(g.tm_year + 1900, g.tm_mon + 1, g.tm_mday);
+  long todayIdx = net::civilDays(g.tm_year + 1900, g.tm_mon + 1, g.tm_mday);
 
   String url = base(COST_REPORT_PATH);
   url += "?starting_at=" + net::iso8601(rangeStart);

@@ -19,6 +19,14 @@ struct SessionUsage {
   bool  limited        = false;  // status == "limited"
   bool  authError      = false;  // last probe got 401/403 even after a forced refresh
   long  lastUpdated    = 0;      // millis() of last good reading
+  // Model-scoped weekly window (e.g. the "Fable" bar on Max plans). Only the
+  // usage endpoint (strategy 0) carries it; absent on plans without one.
+  bool  hasScoped      = false;
+  int   scopedPct      = 0;      // 0..100 utilization of the scoped weekly window
+  long  scopedResetAt  = 0;      // unix epoch (s) it resets (0=unknown)
+  char  scopedLabel[12] = {0};   // scope.model.display_name, e.g. "Fable"
+  // Plan label from the profile endpoint, e.g. "MAX 5x" (empty until fetched).
+  char  plan[16]       = {0};
 };
 
 // One model's slice of cost/usage (admin Usage & Cost API, group_by=model).
