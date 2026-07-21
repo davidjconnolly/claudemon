@@ -26,7 +26,9 @@ inline bool refresh(String& accessToken, String& refreshToken, int64_t& expiresM
 
   JsonDocument req;
   req["grant_type"]    = "refresh_token";
-  req["refresh_token"] = refreshToken.c_str();
+  // std::string so ArduinoJson copies the token into the document — a bare
+  // c_str() would store an unowned pointer into refreshToken's buffer.
+  req["refresh_token"] = std::string(refreshToken.c_str());
   req["client_id"]     = CLAUDE_CODE_CLIENT_ID;
   // serializeJson truncates silently on overflow -> malformed JSON and an
   // inscrutable refresh failure; check the measured size first.
