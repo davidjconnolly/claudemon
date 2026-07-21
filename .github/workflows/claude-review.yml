@@ -31,7 +31,9 @@ jobs:
           # PRs here are often opened by Dave's GitHub App agents; without this
           # the action errors with "Workflow initiated by non-human actor".
           allowed_bots: "dependabot,hermes-dave,claude-code-dave"
-          claude_args: --max-turns 30 --allowedTools "mcp__github_inline_comment__create_inline_comment,Bash(gh pr comment:*),Bash(gh pr diff:*),Bash(gh pr view:*),Bash(gh pr review:*)"
+          # 60 turns: re-reviews of multi-commit PRs (read diff + prior threads +
+          # post verdict) hit the old 30-turn cap ~half the time (see PR #8).
+          claude_args: --max-turns 60 --allowedTools "mcp__github_inline_comment__create_inline_comment,Bash(gh pr comment:*),Bash(gh pr diff:*),Bash(gh pr view:*),Bash(gh pr review:*)"
           prompt: |
             Review this pull request and leave concise, actionable feedback as
             PR review comments. This is an ESP32 / Arduino firmware project built
