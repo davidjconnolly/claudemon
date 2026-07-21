@@ -324,6 +324,7 @@ src/
   secrets.h.example                             local-dev credentials template (copy to gitignored secrets.h)
   main.cpp                                        setup / captive portal / loop / OTA / touch
 tools/render/                                    host renderer — every page to a PNG, no hardware
+tools/test_sub/                                  host test — plan matrix for the subscription parser
 tools/probe.py                                   host API probe (reads secrets.h; never prints keys)
 diagram.json  wokwi.toml                          Wokwi emulator config
 platformio.ini                                    envs: cyd (hardware), emulator (FAKE_DATA), wokwi (live)

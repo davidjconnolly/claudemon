@@ -34,6 +34,8 @@ public:
   String operator+(const char* o)   const { String r(*this); r.s += o; return r; }
   bool operator==(const char* o)   const { return s == o; }
   bool operator==(const String& o) const { return s == o.s; }
+  int indexOf(char c) const { auto p = s.find(c); return p == std::string::npos ? -1 : (int)p; }
+  float toFloat() const { return (float)atof(s.c_str()); }
 };
 inline String operator+(const char* a, const String& b) { String r(a); r += b; return r; }
 
@@ -49,6 +51,17 @@ inline uint32_t esp_random() { return (uint32_t)rand(); }
 inline long map(long x, long im, long ix, long om, long ox) {
   return (x - im) * (ox - om) / (ix - im) + om;
 }
+
+#ifndef constrain
+#define constrain(amt, low, high) ((amt) < (low) ? (low) : ((amt) > (high) ? (high) : (amt)))
+#endif
+
+// --- Serial stub (data-layer headers log through it; discarded on host) ---
+struct SerialStub {
+  void println(const char*) {}
+  void printf(const char*, ...) {}
+};
+static SerialStub Serial;
 
 // --- ESP time helper (filled by the harness) ---
 bool getLocalTime(struct tm* info, uint32_t ms = 0);

@@ -141,10 +141,10 @@ int main() {
   g_data.sub.valid = false;
   shot(0, "alt_usage_nodata", []{ page_session::run(); });
 
-  // two-window USAGE layout (plan without a model-scoped weekly bar / no plan label)
+  // two-window USAGE layout (Pro/Free: no model-scoped weekly bar)
   fake::fill(g_data);
   g_data.sub.hasScoped = false;
-  g_data.sub.plan[0] = 0;
+  snprintf(g_data.sub.plan, sizeof(g_data.sub.plan), "PRO");
   shot(0, "alt_usage_two", []{ page_session::run(); });
   return 0;
 }

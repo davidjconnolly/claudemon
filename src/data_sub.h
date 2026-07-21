@@ -112,7 +112,7 @@ inline int probeUsage(SessionUsage& u, bool& got) {
   if (code != 200) return code;
 
   JsonDocument doc;
-  if (deserializeJson(doc, body)) return code;   // got stays false -> fall through
+  if (deserializeJson(doc, body.c_str())) return code;  // got stays false -> fall through
 
   bool sawSession = false, sawWeekly = false, sawScoped = false, lim = false;
   for (JsonObjectConst l : doc["limits"].as<JsonArrayConst>()) {
@@ -196,7 +196,7 @@ inline void refreshPlan(SessionUsage& u) {
   String body;
   if (net::get(url, hdrs, 2, body) != 200) return;
   JsonDocument doc;
-  if (deserializeJson(doc, body)) return;
+  if (deserializeJson(doc, body.c_str())) return;
   const char* tier = doc["organization"]["rate_limit_tier"]   | "";
   const char* type = doc["organization"]["organization_type"] | "";
   if (!tier[0] && !type[0]) return;

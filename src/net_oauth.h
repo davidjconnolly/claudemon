@@ -26,9 +26,9 @@ inline bool refresh(String& accessToken, String& refreshToken, int64_t& expiresM
 
   JsonDocument req;
   req["grant_type"]    = "refresh_token";
-  req["refresh_token"] = refreshToken;
+  req["refresh_token"] = refreshToken.c_str();
   req["client_id"]     = CLAUDE_CODE_CLIENT_ID;
-  String body; serializeJson(req, body);
+  char body[512]; serializeJson(req, body, sizeof(body));
 
   net::Header hdrs[] = {{"Content-Type", "application/json"}};
   String resp;
@@ -39,7 +39,7 @@ inline bool refresh(String& accessToken, String& refreshToken, int64_t& expiresM
   }
 
   JsonDocument doc;
-  if (deserializeJson(doc, resp)) return false;
+  if (deserializeJson(doc, resp.c_str())) return false;
   String newAccess  = doc["access_token"]  | "";
   if (newAccess.isEmpty()) return false;
   String newRefresh = doc["refresh_token"] | "";
