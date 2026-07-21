@@ -239,6 +239,26 @@ int main() {
   CHECK(sub::poll(u));
   CHECK(u.limited && u.sessionPct == 100);
 
+  // --- upgrade retry: one endpoint blip downgrades to the header probe (bar
+  //     hides honestly), then the periodic retry restores strategy 0 and the
+  //     bar returns — WITHOUT a reboot (the on-device failure of 2026-07-21) ---
+  install(200, usageBody(70, 12, scopedLimit("Fable", 14).c_str()),
+          200, profileBody("claude_max", "default_claude_max_5x"));
+  CHECK(sub::poll(u));
+  CHECK(sub::working == 0 && u.hasScoped);
+  install(404, "", 404, "", hdrs);               // blip: endpoint down one poll
+  CHECK(sub::poll(u));
+  CHECK(sub::working == 1);                      // failed over to count_tokens
+  CHECK(!u.hasScoped);                           // bar hidden, not stale
+  install(200, usageBody(70, 12, scopedLimit("Fable", 14).c_str()),
+          200, profileBody("claude_max", "default_claude_max_5x"), hdrs);
+  int pollsToRecover = 0;                        // endpoint back: bar must return
+  while (sub::working != 0 && pollsToRecover <= 12) { CHECK(sub::poll(u)); pollsToRecover++; }
+  CHECK(sub::working == 0);
+  CHECK(u.hasScoped);
+  CHECK_STR(u.scopedLabel, "Fable");
+  printf("  (upgrade retry recovered after %d polls)\n", pollsToRecover);
+
   if (fails) { printf("%d check(s) FAILED\n", fails); return 1; }
   printf("all checks passed\n");
   return 0;

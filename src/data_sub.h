@@ -25,6 +25,7 @@
 #include "globals.h"
 #include "net_http.h"
 #include "net_oauth.h"
+#include "applog.h"
 
 namespace sub {
 
@@ -32,6 +33,13 @@ namespace sub {
 static bool authError = false;
 // remembered working strategy: -1 unknown, 0 usage endpoint, 1 count_tokens, 2 messages
 static int  working = -1;
+// While downgraded to a probe strategy, re-try the usage endpoint every N polls
+// (~10 min at the 60 s cadence). Without this a single transient failure of the
+// endpoint downgrades the device permanently: the known-good probe succeeds on
+// every later poll, strategy 0 is never re-tried, and the model-scoped bar —
+// which only strategy 0 carries — stays hidden until a reboot.
+static constexpr uint8_t UPGRADE_RETRY_POLLS = 10;
+static uint8_t downgradedPolls = 0;
 
 static const char* RL[5] = {
   "anthropic-ratelimit-unified-5h-utilization",
@@ -225,6 +233,10 @@ inline bool poll(SessionUsage& u) {
   if (oauthToken.isEmpty()) return false;
   oauth::refreshIfNeeded(oauthToken, oauthRefresh, oauthExpiresMs);
 
+  // Advance the upgrade-retry clock once per poll TICK — not inside
+  // runStrategies(), which the auth-error path below can invoke twice.
+  if (working > 0) downgradedPolls++;
+
   auto tryStrategy = [&](int s) -> int {
     bool got = false;
     int code = (s == 0) ? probeUsage(u, got)
@@ -235,11 +247,29 @@ inline bool poll(SessionUsage& u) {
     authError = false;
     // `got` covers both a parsed 200 and (for the probes) a 429 whose unified
     // headers were still present.
-    if (got) { working = s; return 1; }
+    if (got) {
+      // Strategy changes are otherwise invisible: an intra-poll failover still
+      // ends the poll with HTTP 200, so the transition-only event log never
+      // fires. Log them here (this is how a vanished Fable bar gets diagnosed).
+      if (working != s) applog::add("usage: strategy %d (was %d, HTTP %d)", s, working, code);
+      working = s;
+      if (s == 0) downgradedPolls = 0;  // any path back to strategy 0 resets the retry clock
+      return 1;
+    }
     return 0;
   };
 
   auto runStrategies = [&]() -> bool {
+    // Downgraded? Periodically re-try the usage endpoint so a transient blip
+    // doesn't hide the model-scoped bar until the next reboot. Runs BEFORE the
+    // known-good strategy so a failed retry's HTTP code is overwritten by the
+    // real result below.
+    if (working > 0 && downgradedPolls >= UPGRADE_RETRY_POLLS) {
+      downgradedPolls = 0;
+      int r = tryStrategy(0);
+      if (r == 1) return true;            // back on the usage endpoint
+      if (r < 0)  return false;           // auth error; handled by the caller
+    }
     if (working >= 0) {                   // use the known-good strategy
       int r = tryStrategy(working);
       if (r == 1) return true;
