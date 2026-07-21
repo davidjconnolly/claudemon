@@ -71,6 +71,12 @@ inline bool parseHeaders(String* h, SessionUsage& u) {
   long sa = epochFromHeader(h[1]); if (sa > 0) u.sessionResetAt = sa;
   long wa = epochFromHeader(h[3]); if (wa > 0) u.weeklyResetAt  = wa;
   u.limited     = (h[4] == "limited");
+  // The headers carry no model-scoped window, so a header-sourced reading
+  // clears it — otherwise a permanent fall-back from strategy 0 would leave a
+  // frozen scoped bar on-device indefinitely. (The UI just hides the row; the
+  // bar returns on the next successful usage-endpoint poll.)
+  u.hasScoped = false;
+  u.scopedPct = 0; u.scopedResetAt = 0; u.scopedLabel[0] = 0;
   u.valid       = true;
   u.lastUpdated = millis();
   return true;

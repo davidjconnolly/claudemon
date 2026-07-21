@@ -168,10 +168,13 @@ int main() {
     {"anthropic-ratelimit-unified-status",         "allowed"},
   };
   install(404, "", 404, "", hdrs);
+  CHECK(u.hasScoped);                           // entering with a live scoped bar (Max above)
   CHECK(sub::poll(u));
   CHECK(u.sessionPct == 42 && u.weeklyPct == 7);
   CHECK(u.sessionResetAt == 1785200000L);
   CHECK(!u.limited);
+  CHECK(!u.hasScoped);                          // header reading clears the scoped bar
+  CHECK(u.scopedLabel[0] == 0);                 // ...rather than freezing stale Fable data
   CHECK(sub::working == 1);                     // rediscovered count_tokens
 
   // --- invalid JSON and unrecognised shapes also fall through ---
