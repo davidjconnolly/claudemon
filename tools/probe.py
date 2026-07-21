@@ -128,10 +128,39 @@ def main():
     else:
         print("(no DEV_ADMIN_KEY set — skipping cost/usage)\n")
 
-    # ---- USAGE % rate-limit headers (best-effort, no refresh) ----
+    # ---- USAGE: the endpoint the claude.ai usage page reads (strategy 0) ----
     if s["DEV_OAUTH_AT"]:
         oh = {"Authorization": "Bearer " + s["DEV_OAUTH_AT"],
-              "anthropic-version": VER, "Content-Type": "application/json"}
+              "anthropic-beta": "oauth-2025-04-20"}
+        code, _, body = req("GET", f"{HOST}/api/oauth/usage", oh)
+        print(f"=== /api/oauth/usage  HTTP {code} ===")
+        if code == 200:
+            d = json.loads(body)
+            for lim in d.get("limits", []):
+                scope = ((lim.get("scope") or {}).get("model") or {}).get("display_name", "")
+                name = lim.get("kind", "?") + (f" ({scope})" if scope else "")
+                print(f"  {name:24s} {lim.get('percent')}%  resets {lim.get('resets_at')}")
+        elif code == 401:
+            print("  401 — access token in secrets.h is stale (expected; the device "
+                  "refreshes its own). USAGE still works on-device.")
+        else:
+            print("  body:", body[:200])
+        print()
+
+        # ---- plan label ----
+        code, _, body = req("GET", f"{HOST}/api/oauth/profile", oh)
+        print(f"=== /api/oauth/profile  HTTP {code} ===")
+        if code == 200:
+            o = json.loads(body).get("organization", {})
+            print(f"  organization_type: {o.get('organization_type')}")
+            print(f"  rate_limit_tier:   {o.get('rate_limit_tier')}")
+        elif code != 401:
+            print("  body:", body[:200])
+        print()
+
+        # ---- unified rate-limit headers (fallback strategies 1/2) ----
+        oh["anthropic-version"] = VER
+        oh["Content-Type"] = "application/json"
         b = '{"model":"claude-haiku-4-5","messages":[{"role":"user","content":"."}]}'
         code, hdrs, body = req("POST", f"{HOST}/v1/messages/count_tokens", oh, b)
         print(f"=== rate-limit headers (count_tokens)  HTTP {code} ===")
@@ -140,8 +169,7 @@ def main():
             for k, v in sorted(rl.items()):
                 print(f"  {k}: {v}")
         elif code == 401:
-            print("  401 — access token in secrets.h is stale (expected; the device "
-                  "refreshes its own). USAGE still works on-device.")
+            print("  401 — stale access token (see above)")
         else:
             print("  no unified headers; body:", body[:200])
     else:

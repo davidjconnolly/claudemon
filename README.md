@@ -15,7 +15,7 @@ pulls from up to two sources, showing only the pages it can populate:
 | Source | Auth | Pages |
 |---|---|---|
 | **Console Usage & Cost Admin API** | Admin key `sk-ant-admin01…` | `COST` · `MODELS` · `TREND` |
-| **Subscription rate-limit windows** | Claude Code OAuth token | `USAGE` (5h session + 7d weekly + resets) |
+| **Subscription rate-limit windows** | Claude Code OAuth token | `USAGE` (5h session + 7d weekly + model-scoped weekly, e.g. Fable, + resets + plan) |
 
 Configure **either or both**. Add an admin key later and the cost pages light up automatically — no reflash.
 
@@ -229,7 +229,7 @@ the Settings overlay, or the web `/config` page. (There is intentionally no glob
 
 | Page | Needs | Shows |
 |---|---|---|
-| `USAGE` | OAuth | Session % + "resets in 2h 14m"; Weekly % + "resets Sun 11:00 PM"; headroom ("36% left") / `RATE LIMITED` / `OAUTH EXPIRED` |
+| `USAGE` | OAuth | Session % + "resets in 2h 14m"; Weekly % + "resets Sun 11:00 PM"; model-scoped weekly bar (e.g. `FABLE` on Max plans) + plan label (`MAX 5x`); headroom ("36% left") / `RATE LIMITED` / `OAUTH EXPIRED` |
 | `COST` | Admin | $ + tokens today / week / month + month **projection**; cache-hit %; budget bar or month-end countdown |
 | `MODELS` | Admin | Per-model cost bars + tokens (rolling 7 days) |
 | `TREND` | Admin | 24h token sparkline + 7d cost sparkline |
@@ -282,21 +282,24 @@ Cost amounts are **cents** per the docs (`"123.45"` → $1.23), verified against
 ### How the subscription path works
 
 There's no documented read for the 5h/7d windows, so [`src/data_sub.h`](src/data_sub.h) tries strategies
-cheapest-first and remembers the first that returns the unified headers:
+cheapest-first and remembers the first that works:
 
-1. **`count_tokens` probe** — free, separate limit; *may* return the headers without opening a session.
+0. **Usage endpoint** — the (undocumented) `GET /api/oauth/usage` the claude.ai usage page reads. Free, does
+   **not** open a session, and is the only source of the **model-scoped weekly window** (the Fable bar on Max
+   plans) via its `limits[]` array. Shape confirmed live 2026-07; a shape change just falls through to:
+1. **`count_tokens` probe** — free, separate limit; *may* return the unified headers without opening a session.
 2. **`messages` probe** — costs ~1 token and opens/refreshes a 5h session (the proven fallback).
 
-**The session caveat:** reading the windows requires a request, and a `messages` probe not already inside a
-live session **opens one** (the free `count_tokens` probe doesn't). The device probes on a fixed **60 s**
-cadence; each probe is ~1 token or free, so the cost is negligible. On a 401 it **force-refreshes** the OAuth
-token and retries; if that still fails (the token is shared with your Claude Code, which rotates it) it shows
-an `OAUTH TOKEN EXPIRED` banner on the device and web `/status` rather than silently showing stale data. Token
-refresh runs on-device using the refresh token (see [`src/net_oauth.h`](src/net_oauth.h)).
+The plan label (`MAX 5x`) comes from the sibling `GET /api/oauth/profile` (`organization.rate_limit_tier`),
+fetched daily — cosmetic only, so its failure never affects the usage reading.
 
-> The `count_tokens`-returns-headers idea and a future zero-cost "usage endpoint" (the one the web usage page
-> uses) are **spikes to confirm on real hardware** — if either works, the session is read for free and the
-> probe is never needed.
+**The session caveat (fallbacks only):** the probes require a request, and a `messages` probe not already
+inside a live session **opens one** (the free `count_tokens` probe and the usage endpoint don't). The device
+polls on a fixed **60 s** cadence; each poll is free or ~1 token, so the cost is negligible. On a 401 it
+**force-refreshes** the OAuth token and retries; if that still fails (the token is shared with your Claude
+Code, which rotates it) it shows an `OAUTH TOKEN EXPIRED` banner on the device and web `/status` rather than
+silently showing stale data. Token refresh runs on-device using the refresh token (see
+[`src/net_oauth.h`](src/net_oauth.h)).
 
 ---
 
@@ -321,6 +324,7 @@ src/
   secrets.h.example                             local-dev credentials template (copy to gitignored secrets.h)
   main.cpp                                        setup / captive portal / loop / OTA / touch
 tools/render/                                    host renderer — every page to a PNG, no hardware
+tools/test_sub/                                  host test — plan matrix for the subscription parser
 tools/probe.py                                   host API probe (reads secrets.h; never prints keys)
 diagram.json  wokwi.toml                          Wokwi emulator config
 platformio.ini                                    envs: cyd (hardware), emulator (FAKE_DATA), wokwi (live)

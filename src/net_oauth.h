@@ -26,9 +26,18 @@ inline bool refresh(String& accessToken, String& refreshToken, int64_t& expiresM
 
   JsonDocument req;
   req["grant_type"]    = "refresh_token";
-  req["refresh_token"] = refreshToken;
+  // std::string so ArduinoJson copies the token into the document — a bare
+  // c_str() would store an unowned pointer into refreshToken's buffer.
+  req["refresh_token"] = std::string(refreshToken.c_str());
   req["client_id"]     = CLAUDE_CODE_CLIENT_ID;
-  String body; serializeJson(req, body);
+  // serializeJson truncates silently on overflow -> malformed JSON and an
+  // inscrutable refresh failure; check the measured size first.
+  char body[768];
+  if (measureJson(req) >= sizeof(body)) {
+    applog::add("oauth: refresh request too large");
+    return false;
+  }
+  serializeJson(req, body, sizeof(body));
 
   net::Header hdrs[] = {{"Content-Type", "application/json"}};
   String resp;
@@ -39,7 +48,7 @@ inline bool refresh(String& accessToken, String& refreshToken, int64_t& expiresM
   }
 
   JsonDocument doc;
-  if (deserializeJson(doc, resp)) return false;
+  if (deserializeJson(doc, resp.c_str())) return false;
   String newAccess  = doc["access_token"]  | "";
   if (newAccess.isEmpty()) return false;
   String newRefresh = doc["refresh_token"] | "";

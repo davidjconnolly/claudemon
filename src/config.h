@@ -53,6 +53,11 @@ static constexpr unsigned long POLL_SUB_MS   = 60000;  // subscription rate-limi
 #define COST_REPORT_PATH      "/v1/organizations/cost_report"
 #define COUNT_TOKENS_PATH     "/v1/messages/count_tokens"
 #define MESSAGES_PATH         "/v1/messages"
+// Subscription usage/profile endpoints (UNDOCUMENTED — the ones the claude.ai
+// usage page and Claude Code's /usage panel read; shape confirmed live 2026-07).
+#define OAUTH_USAGE_PATH      "/api/oauth/usage"
+#define OAUTH_PROFILE_PATH    "/api/oauth/profile"
+#define OAUTH_BETA_HDR        "oauth-2025-04-20"
 #define OAUTH_TOKEN_URL       "https://console.anthropic.com/v1/oauth/token"
 // Claude Code's public OAuth client id (UNDOCUMENTED — verify against your own
 // ~/.claude/.credentials.json refresh flow before trusting on-device refresh).
