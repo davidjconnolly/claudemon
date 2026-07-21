@@ -7,3 +7,5 @@ __pycache__/
 secrets.h
 tools/render/out/
 tools/render/render
+tools/test_sub/test_sub
+tools/test_sub/test_sub.dSYM/
