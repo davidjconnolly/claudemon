@@ -123,10 +123,14 @@ inline int probeUsage(SessionUsage& u, bool& got) {
   bool sawSession = false, sawWeekly = false, sawScoped = false, lim = false;
   for (JsonObjectConst l : doc["limits"].as<JsonArrayConst>()) {
     const char* kind = l["kind"] | "";
-    int  pct = l["percent"] | -1;
+    // percent is an integer today, but parse it float-safe (like the sibling
+    // utilization fields): an int-typed `| -1` gate would silently drop the
+    // whole entry if the API ever emits 14.0 — and weekly_scoped has no
+    // fallback source, so the Fable bar would just vanish.
+    if (l["percent"].isNull()) continue;
+    float raw = l["percent"].as<float>();
+    int  pct = constrain((int)(raw + 0.5f), 0, 100);
     long rst = net::parseIso8601Utc(l["resets_at"] | "");
-    if (pct < 0) continue;
-    pct = constrain(pct, 0, 100);
     if (strcmp(kind, "session") == 0) {
       u.sessionPct = pct; if (rst > 0) u.sessionResetAt = rst; sawSession = true;
     } else if (strcmp(kind, "weekly_all") == 0) {
@@ -136,7 +140,7 @@ inline int probeUsage(SessionUsage& u, bool& got) {
       snprintf(u.scopedLabel, sizeof(u.scopedLabel), "%s", name);
       u.scopedPct = pct;  if (rst > 0) u.scopedResetAt = rst;  sawScoped = true;
     }
-    if ((l["percent"] | 0) >= 100) lim = true;   // pre-clamp value
+    if (raw >= 100.0f) lim = true;               // pre-clamp value
   }
   // Robustness: fill any window missing from limits[] from the top-level
   // five_hour/seven_day objects (utilization is already a percent there) —

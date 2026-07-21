@@ -199,6 +199,22 @@ int main() {
   CHECK(!u.limited);
   CHECK(sub::working == 0);
 
+  // --- float-typed percent values (like the sibling utilization fields) must
+  //     still parse — an int-only gate would silently drop the Fable bar ---
+  sub::working = -1;
+  install(200,
+          "{\"limits\":["
+          "{\"kind\":\"session\",\"percent\":70.0,\"resets_at\":\"2026-07-21T18:40:00+00:00\",\"scope\":null},"
+          "{\"kind\":\"weekly_all\",\"percent\":12.4,\"resets_at\":\"2026-07-27T03:00:00+00:00\",\"scope\":null},"
+          "{\"kind\":\"weekly_scoped\",\"percent\":13.6,\"resets_at\":\"2026-07-27T03:00:00+00:00\","
+          "\"scope\":{\"model\":{\"display_name\":\"Fable\"}}}]}",
+          404, "");
+  CHECK(sub::poll(u));
+  CHECK(u.sessionPct == 70);
+  CHECK(u.weeklyPct == 12);                      // 12.4 rounds down
+  CHECK(u.hasScoped && u.scopedPct == 14);       // 13.6 rounds up
+  CHECK(sub::working == 0);
+
   // --- partial limits[] (session only): the missing weekly window fills from
   //     the top-level seven_day object instead of staying stale ---
   sub::working = -1;
