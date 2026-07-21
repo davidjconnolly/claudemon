@@ -137,12 +137,14 @@ inline int probeUsage(SessionUsage& u, bool& got) {
   if (!sawSession && !sawWeekly) {
     JsonObjectConst fh = doc["five_hour"], sd = doc["seven_day"];
     if (!fh.isNull()) {
-      u.sessionPct = constrain((int)(fh["utilization"].as<float>() + 0.5f), 0, 100);
+      int p = constrain((int)(fh["utilization"].as<float>() + 0.5f), 0, 100);
+      u.sessionPct = p; if (p >= 100) lim = true;
       long r = net::parseIso8601Utc(fh["resets_at"] | ""); if (r > 0) u.sessionResetAt = r;
       sawSession = true;
     }
     if (!sd.isNull()) {
-      u.weeklyPct = constrain((int)(sd["utilization"].as<float>() + 0.5f), 0, 100);
+      int p = constrain((int)(sd["utilization"].as<float>() + 0.5f), 0, 100);
+      u.weeklyPct = p; if (p >= 100) lim = true;
       long r = net::parseIso8601Utc(sd["resets_at"] | ""); if (r > 0) u.weeklyResetAt = r;
       sawWeekly = true;
     }

@@ -193,7 +193,16 @@ int main() {
           404, "");
   CHECK(sub::poll(u));
   CHECK(u.sessionPct == 55 && u.weeklyPct == 9);
+  CHECK(!u.limited);
   CHECK(sub::working == 0);
+
+  // --- 100% in the fallback shape must also raise the limited flag ---
+  install(200,
+          "{\"five_hour\":{\"utilization\":100.0,\"resets_at\":\"2026-07-21T18:40:00+00:00\"},"
+          "\"seven_day\":{\"utilization\":9.0,\"resets_at\":\"2026-07-27T03:00:00+00:00\"}}",
+          404, "");
+  CHECK(sub::poll(u));
+  CHECK(u.limited && u.sessionPct == 100);
 
   if (fails) { printf("%d check(s) FAILED\n", fails); return 1; }
   printf("all checks passed\n");

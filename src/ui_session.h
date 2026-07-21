@@ -123,11 +123,11 @@ inline void run() {
   // session") show session headroom — that's what bites first; else show
   // whichever weekly window (all-models or scoped) is closest to its limit.
   bool showWeekly = (u.sessionPct <= 1);
-  int  wkPct = u.weeklyPct; const char* wkName = "weekly";
-  if (u.hasScoped && u.scopedPct > wkPct) { wkPct = u.scopedPct; wkName = u.scopedLabel; }
+  int  wkPct = u.weeklyPct; const char* wkName = "weekly"; bool scopedWins = false;
+  if (u.hasScoped && u.scopedPct > wkPct) { wkPct = u.scopedPct; wkName = u.scopedLabel; scopedWins = true; }
   int  headroom = 100 - (showWeekly ? wkPct : u.sessionPct);
   long foot = u.authError ? -3 : u.limited ? -2
-            : (long)(showWeekly ? (wkName == u.scopedLabel ? 2000 : 1000) : 0) + headroom;
+            : (long)(showWeekly ? (scopedWins ? 2000 : 1000) : 0) + headroom;
   if (foot != lFoot) {
     lFoot = foot;
     tft.fillRect(0, footY, SCREEN_W, NAV_Y - footY, COL_BG);
