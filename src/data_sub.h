@@ -41,6 +41,14 @@ static int  working = -1;
 static constexpr uint8_t UPGRADE_RETRY_POLLS = 10;
 static uint8_t downgradedPolls = 0;
 
+// Hysteresis on the DOWNGRADE side: a known-good strategy must miss this many
+// polls in a row before we abandon it. A single dropped TLS read / transient
+// 5xx on strategy 0 would otherwise wipe the model-scoped ("Fable") bar and
+// lock in an UPGRADE_RETRY_POLLS blackout, so one blip blanked the bar for
+// ~10 min. Holding a few polls lets the next good read keep the bar alive.
+static constexpr uint8_t DOWNGRADE_AFTER_MISSES = 3;
+static uint8_t knownGoodMisses = 0;
+
 static const char* RL[5] = {
   "anthropic-ratelimit-unified-5h-utilization",
   "anthropic-ratelimit-unified-5h-reset",
@@ -253,6 +261,7 @@ inline bool poll(SessionUsage& u) {
       // fires. Log them here (this is how a vanished Fable bar gets diagnosed).
       if (working != s) applog::add("usage: strategy %d (was %d, HTTP %d)", s, working, code);
       working = s;
+      knownGoodMisses = 0;              // any success resets the downgrade hysteresis
       if (s == 0) downgradedPolls = 0;  // any path back to strategy 0 resets the retry clock
       return 1;
     }
@@ -274,7 +283,17 @@ inline bool poll(SessionUsage& u) {
       int r = tryStrategy(working);
       if (r == 1) return true;
       if (r < 0)  return false;           // auth error
-      working = -1;                       // it stopped working; rediscover
+      // Soft failure. Don't abandon a known-good strategy on the first miss:
+      // dropping strategy 0 wipes the model-scoped ("Fable") bar and blocks its
+      // return for UPGRADE_RETRY_POLLS, so a single transient blip blanks the
+      // bar for ~10 min. Hold for DOWNGRADE_AFTER_MISSES consecutive misses.
+      // Log the FIRST miss of a streak with its code — strategy 0's failure is
+      // otherwise invisible (a later strategy's HTTP 200 overwrites subLastCode
+      // before the poller logs it), so the vanishing bar couldn't be diagnosed.
+      if (working == 0 && knownGoodMisses == 0)
+        applog::add("usage: strategy 0 miss (HTTP %d)", g_diag.subLastCode);
+      if (++knownGoodMisses < DOWNGRADE_AFTER_MISSES) return false;
+      working = -1;                       // it really stopped working; rediscover
     }
     for (int s = 0; s <= 2; s++) {        // discover cheapest working strategy
       int r = tryStrategy(s);
