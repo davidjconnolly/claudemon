@@ -94,7 +94,13 @@ inline void tick() {
     if (g_diag.subLastCode != prevSub) {
       prevSub = g_diag.subLastCode;
       if (g_diag.subLastCode == 200 || g_diag.subLastCode == 429) applog::add("usage: ok");
-      else if (g_diag.subLastCode != 0) applog::add("usage: HTTP %d (check OAuth token)", g_diag.subLastCode);
+      // Only 401/403 is actually an OAuth problem. Other non-2xx codes are
+      // transient 5xx / -11 network blips, now logged with precise per-strategy
+      // context by data_sub's miss line; don't double-log them here (and the
+      // "check OAuth token" hint would be misleading), keeping the small ring
+      // buffer legible for diagnosis.
+      else if (g_diag.subLastCode == 401 || g_diag.subLastCode == 403)
+        applog::add("usage: HTTP %d (check OAuth token)", g_diag.subLastCode);
     }
   }
 
