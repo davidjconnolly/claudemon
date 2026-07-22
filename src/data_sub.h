@@ -49,11 +49,18 @@ static uint8_t downgradedPolls = 0;
 static constexpr uint8_t DOWNGRADE_AFTER_MISSES = 3;
 static uint8_t knownGoodMisses = 0;
 
-// Dedup for the "all strategies down" log emitted from the discovery loop's
-// total-failure path (boot before any strategy is known-good, or the inline
-// rediscovery right after a downgrade). Remember the last logged code so a
-// sustained outage writes one line, not one per poll. Reset on any success.
-static int lastDarkCode = 0;
+// Usage-miss logging is deduped by the HTTP code, not by "first miss of a
+// streak": a streak whose code changes mid-way (e.g. 500 then -11 then the
+// downgrade) must record BOTH codes — that transition is exactly the blind spot
+// this logging closes — while a run of identical codes still writes one line so
+// a sustained outage can't flood the small flash ring buffer. Reset on any
+// success (re-arms for the next incident).
+static int lastMissCode = 0;
+inline bool newMissCode(int code) {
+  if (code == lastMissCode) return false;
+  lastMissCode = code;
+  return true;
+}
 
 static const char* RL[5] = {
   "anthropic-ratelimit-unified-5h-utilization",
@@ -268,7 +275,7 @@ inline bool poll(SessionUsage& u) {
       if (working != s) applog::add("usage: strategy %d (was %d, HTTP %d)", s, working, code);
       working = s;
       knownGoodMisses = 0;              // any success resets the downgrade hysteresis
-      lastDarkCode = 0;                 // ...and re-arms the all-strategies-down log
+      lastMissCode = 0;                 // ...and re-arms the deduped miss log
       if (s == 0) downgradedPolls = 0;  // any path back to strategy 0 resets the retry clock
       return 1;
     }
@@ -288,7 +295,8 @@ inline bool poll(SessionUsage& u) {
       // r == 0: the retry failed and its HTTP code is about to be overwritten
       // by the known-good strategy below. Log it here so a device stuck
       // downgraded (strategy 0 persistently failing) isn't diagnostically dark.
-      applog::add("usage: strategy 0 retry miss (HTTP %d)", g_diag.subLastCode);
+      if (newMissCode(g_diag.subLastCode))
+        applog::add("usage: strategy 0 retry miss (HTTP %d)", g_diag.subLastCode);
     }
     if (working >= 0) {                   // use the known-good strategy
       int r = tryStrategy(working);
@@ -298,30 +306,32 @@ inline bool poll(SessionUsage& u) {
       // dropping strategy 0 wipes the model-scoped ("Fable") bar and blocks its
       // return for UPGRADE_RETRY_POLLS, so a single transient blip blanks the
       // bar for ~10 min. Hold for DOWNGRADE_AFTER_MISSES consecutive misses.
-      // Log the FIRST miss of a streak with its code, for ANY known-good
-      // strategy (0, 1 or 2). A miss is otherwise invisible — a later strategy's
-      // HTTP 200 overwrites subLastCode before the poller logs it, and the
-      // poller now records only auth codes — so neither the vanishing Fable bar
-      // (strategy 0) nor a probe-strategy blip could be diagnosed.
-      if (knownGoodMisses == 0)
+      // Log the miss (deduped by code) for ANY known-good strategy (0, 1 or 2).
+      // A miss is otherwise invisible — a later strategy's HTTP 200 overwrites
+      // subLastCode before the poller logs it, and the poller now records only
+      // auth codes — so neither the vanishing Fable bar (strategy 0) nor a
+      // probe-strategy blip could be diagnosed. Dedup-by-code (not first-miss)
+      // so a streak whose code shifts mid-way records each distinct failure.
+      if (newMissCode(g_diag.subLastCode))
         applog::add("usage: strategy %d miss (HTTP %d)", working, g_diag.subLastCode);
       if (++knownGoodMisses < DOWNGRADE_AFTER_MISSES) return false;
       working = -1;                       // it really stopped working; rediscover
     }
+    int usageCode = 0;                    // strategy 0's code — the one worth logging
     for (int s = 0; s <= 2; s++) {        // discover cheapest working strategy
       int r = tryStrategy(s);
+      if (s == 0) usageCode = g_diag.subLastCode;
       if (r == 1) return true;
       if (r < 0)  return false;
     }
     // Every strategy failed — the discovery path (boot before any strategy is
     // known-good, or the inline rediscovery right after a downgrade). The other
     // miss logs don't cover this path and the poller records only auth codes, so
-    // a real WiFi/TLS outage would otherwise leave the event log silent. Log it
-    // here, deduped by code so a sustained -11/5xx storm writes one line.
-    if (g_diag.subLastCode != lastDarkCode) {
-      lastDarkCode = g_diag.subLastCode;
-      applog::add("usage: all strategies down (HTTP %d)", g_diag.subLastCode);
-    }
+    // a real WiFi/TLS outage would otherwise leave the event log silent. Report
+    // strategy 0's code (not the loop's last, which is the messages probe's) —
+    // deduped like the other misses so a sustained -11/5xx storm writes one line.
+    if (newMissCode(usageCode))
+      applog::add("usage: all strategies down (strategy 0 HTTP %d)", usageCode);
     return false;
   };
 
