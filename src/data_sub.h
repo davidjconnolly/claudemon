@@ -278,6 +278,10 @@ inline bool poll(SessionUsage& u) {
       int r = tryStrategy(0);
       if (r == 1) return true;            // back on the usage endpoint
       if (r < 0)  return false;           // auth error; handled by the caller
+      // r == 0: the retry failed and its HTTP code is about to be overwritten
+      // by the known-good strategy below. Log it here so a device stuck
+      // downgraded (strategy 0 persistently failing) isn't diagnostically dark.
+      applog::add("usage: strategy 0 retry miss (HTTP %d)", g_diag.subLastCode);
     }
     if (working >= 0) {                   // use the known-good strategy
       int r = tryStrategy(working);

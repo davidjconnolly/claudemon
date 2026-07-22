@@ -169,7 +169,11 @@ int main() {
   };
   install(404, "", 404, "", hdrs);
   CHECK(u.hasScoped);                           // entering with a live scoped bar (Max above)
-  CHECK(sub::poll(u));
+  for (int i = 1; i < sub::DOWNGRADE_AFTER_MISSES; i++) {
+    CHECK(!sub::poll(u));                        // blips tolerated: bar held...
+    CHECK(u.hasScoped);
+  }
+  CHECK(sub::poll(u));                           // the DOWNGRADE_AFTER_MISSES-th miss fails over
   CHECK(u.sessionPct == 42 && u.weeklyPct == 7);
   CHECK(u.sessionResetAt == 1785200000L);
   CHECK(!u.limited);
@@ -239,17 +243,25 @@ int main() {
   CHECK(sub::poll(u));
   CHECK(u.limited && u.sessionPct == 100);
 
-  // --- upgrade retry: one endpoint blip downgrades to the header probe (bar
-  //     hides honestly), then the periodic retry restores strategy 0 and the
-  //     bar returns — WITHOUT a reboot (the on-device failure of 2026-07-21) ---
+  // --- downgrade hysteresis: a lone endpoint blip is TOLERATED — the Fable bar
+  //     survives instead of flapping. Only DOWNGRADE_AFTER_MISSES consecutive
+  //     misses fail over to the header probe (the ~10-min bar-disappearance of
+  //     2026-07-21 was one blip immediately blanking the bar) ---
   install(200, usageBody(70, 12, scopedLimit("Fable", 14).c_str()),
           200, profileBody("claude_max", "default_claude_max_5x"));
   CHECK(sub::poll(u));
   CHECK(sub::working == 0 && u.hasScoped);
-  install(404, "", 404, "", hdrs);               // blip: endpoint down one poll
-  CHECK(sub::poll(u));
-  CHECK(sub::working == 1);                      // failed over to count_tokens
-  CHECK(!u.hasScoped);                           // bar hidden, not stale
+  install(404, "", 404, "", hdrs);               // endpoint down; probe headers ready
+  for (int i = 1; i < sub::DOWNGRADE_AFTER_MISSES; i++) {
+    CHECK(!sub::poll(u));                         // soft miss -> poll reports failure...
+    CHECK(sub::working == 0);                     // ...but the known-good strategy is held...
+    CHECK(u.hasScoped);                           // ...and the Fable bar is NOT dropped
+  }
+  CHECK(sub::poll(u));                            // the DOWNGRADE_AFTER_MISSES-th miss fails over
+  CHECK(sub::working == 1);                       // failed over to count_tokens
+  CHECK(!u.hasScoped);                            // bar hidden, not stale
+  // --- upgrade retry: the periodic strategy-0 retry restores the endpoint and
+  //     the bar returns — WITHOUT a reboot ---
   install(200, usageBody(70, 12, scopedLimit("Fable", 14).c_str()),
           200, profileBody("claude_max", "default_claude_max_5x"), hdrs);
   int pollsToRecover = 0;                        // endpoint back: bar must return
