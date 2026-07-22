@@ -49,6 +49,12 @@ static uint8_t downgradedPolls = 0;
 static constexpr uint8_t DOWNGRADE_AFTER_MISSES = 3;
 static uint8_t knownGoodMisses = 0;
 
+// Dedup for the "all strategies down" log emitted from the discovery loop's
+// total-failure path (boot before any strategy is known-good, or the inline
+// rediscovery right after a downgrade). Remember the last logged code so a
+// sustained outage writes one line, not one per poll. Reset on any success.
+static int lastDarkCode = 0;
+
 static const char* RL[5] = {
   "anthropic-ratelimit-unified-5h-utilization",
   "anthropic-ratelimit-unified-5h-reset",
@@ -262,6 +268,7 @@ inline bool poll(SessionUsage& u) {
       if (working != s) applog::add("usage: strategy %d (was %d, HTTP %d)", s, working, code);
       working = s;
       knownGoodMisses = 0;              // any success resets the downgrade hysteresis
+      lastDarkCode = 0;                 // ...and re-arms the all-strategies-down log
       if (s == 0) downgradedPolls = 0;  // any path back to strategy 0 resets the retry clock
       return 1;
     }
@@ -305,6 +312,15 @@ inline bool poll(SessionUsage& u) {
       int r = tryStrategy(s);
       if (r == 1) return true;
       if (r < 0)  return false;
+    }
+    // Every strategy failed — the discovery path (boot before any strategy is
+    // known-good, or the inline rediscovery right after a downgrade). The other
+    // miss logs don't cover this path and the poller records only auth codes, so
+    // a real WiFi/TLS outage would otherwise leave the event log silent. Log it
+    // here, deduped by code so a sustained -11/5xx storm writes one line.
+    if (g_diag.subLastCode != lastDarkCode) {
+      lastDarkCode = g_diag.subLastCode;
+      applog::add("usage: all strategies down (HTTP %d)", g_diag.subLastCode);
     }
     return false;
   };

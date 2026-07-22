@@ -271,6 +271,18 @@ int main() {
   CHECK_STR(u.scopedLabel, "Fable");
   printf("  (upgrade retry recovered after %d polls)\n", pollsToRecover);
 
+  // --- all strategies down (a real WiFi/TLS outage): the discovery loop finds
+  //     nothing, poll reports failure and stays unconfigured — must not crash or
+  //     wedge, and recovers cleanly once a strategy comes back ---
+  sub::working = -1;
+  install(500, "", 500, "");                     // usage 5xx; probes 400 w/o headers
+  CHECK(!sub::poll(u));                           // nothing worked this poll
+  CHECK(sub::working == -1);                      // still unconfigured; will retry
+  install(200, usageBody(50, 8, ""),
+          200, profileBody("claude_pro", "default_claude_pro"));
+  CHECK(sub::poll(u));
+  CHECK(sub::working == 0 && u.sessionPct == 50); // endpoint back -> reconfigured
+
   if (fails) { printf("%d check(s) FAILED\n", fails); return 1; }
   printf("all checks passed\n");
   return 0;
