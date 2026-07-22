@@ -287,11 +287,13 @@ inline bool poll(SessionUsage& u) {
       // dropping strategy 0 wipes the model-scoped ("Fable") bar and blocks its
       // return for UPGRADE_RETRY_POLLS, so a single transient blip blanks the
       // bar for ~10 min. Hold for DOWNGRADE_AFTER_MISSES consecutive misses.
-      // Log the FIRST miss of a streak with its code — strategy 0's failure is
-      // otherwise invisible (a later strategy's HTTP 200 overwrites subLastCode
-      // before the poller logs it), so the vanishing bar couldn't be diagnosed.
-      if (working == 0 && knownGoodMisses == 0)
-        applog::add("usage: strategy 0 miss (HTTP %d)", g_diag.subLastCode);
+      // Log the FIRST miss of a streak with its code, for ANY known-good
+      // strategy (0, 1 or 2). A miss is otherwise invisible — a later strategy's
+      // HTTP 200 overwrites subLastCode before the poller logs it, and the
+      // poller now records only auth codes — so neither the vanishing Fable bar
+      // (strategy 0) nor a probe-strategy blip could be diagnosed.
+      if (knownGoodMisses == 0)
+        applog::add("usage: strategy %d miss (HTTP %d)", working, g_diag.subLastCode);
       if (++knownGoodMisses < DOWNGRADE_AFTER_MISSES) return false;
       working = -1;                       // it really stopped working; rediscover
     }
