@@ -336,10 +336,14 @@ void setup() {
   }, ARDUINO_EVENT_WIFI_STA_DISCONNECTED);
   applog::add("wifi: connected %s, ip %s, %d dBm", WiFi.SSID().c_str(),
               WiFi.localIP().toString().c_str(), (int)WiFi.RSSI());
+  // Server first, so it is listening the moment checkOTA() returns. Note this does
+  // NOT make the device answer during a boot-time download: WebServer is polled
+  // from loop(), so requests only queue until setup() finishes. The stall timeout
+  // in otaDownloadFlash is what actually bounds that window.
+  webcfg::begin();    // status + reconfiguration server on the LAN (http://claudemon.local)
   #ifndef WOKWI
   checkOTA();         // boot update prompt — hardware only (skips the Wokwi TLS hang)
   #endif
-  webcfg::begin();    // status + reconfiguration server on the LAN (http://claudemon.local)
 #endif
 
   buildPages();
@@ -542,6 +546,17 @@ bool otaFetchLatest(String& tagOut, String& urlOut) {
   return true;
 }
 
+// Record a failed install everywhere it can be seen. g_diag.otaMsg matters as much
+// as the log here: otaFetchLatest() last set it to "vX available", and the /status
+// OTA row reads only that — so without this a stalled install leaves the web UI
+// cheerfully advertising an update that just failed to install.
+void otaFailed(const char* msg, const char* splash = "update failed") {
+  applog::add("ota: %s", msg);
+  snprintf(g_diag.otaMsg, sizeof g_diag.otaMsg, "%s", msg);
+  bootSplash(splash);
+  delay(1500);
+}
+
 // Download the firmware at `url` and flash it with a progress bar; reboots on success.
 void otaDownloadFlash(const String& url) {
   tft.fillScreen(COL_BG);
@@ -551,34 +566,76 @@ void otaDownloadFlash(const String& url) {
   tft.drawString("do not power off", CENTER_X, 66, 1);
   tft.setTextDatum(TL_DATUM);
 
+  char m[80];
   WiFiClientSecure client; client.setInsecure();
   HTTPClient http;
   http.setFollowRedirects(HTTPC_STRICT_FOLLOW_REDIRECTS);
-  if (!http.begin(client, url)) return;
+  if (!http.begin(client, url)) { otaFailed("connect failed"); return; }
   http.addHeader("User-Agent", "CYD-Claudemon");
-  if (http.GET() != 200) { http.end(); return; }
+  int code = http.GET();
+  if (code != 200) {
+    http.end(); snprintf(m, sizeof m, "download HTTP %d", code); otaFailed(m); return;
+  }
   int len = http.getSize();
+  // Update.begin() needs the image size up front, so a chunked or unknown-length
+  // response can't be flashed. GitHub's asset URLs always send Content-Length; if
+  // a redirect ever lands somewhere that doesn't, this fails fast with a reason
+  // rather than the silent Update.begin(-1) failure it used to produce.
+  if (len <= 0) {
+    http.end(); snprintf(m, sizeof m, "no content-length (%d)", len); otaFailed(m); return;
+  }
   WiFiClient* stream = http.getStreamPtr();
-  if (!Update.begin(len)) { http.end(); return; }
+  if (!Update.begin(len)) {
+    http.end(); snprintf(m, sizeof m, "begin failed (%s)", Update.errorString()); otaFailed(m); return;
+  }
 
-  uint8_t buf[1024]; int written = 0;
+  // Any failure below returns to the caller still running the CURRENT firmware:
+  // the download writes to the inactive partition and the boot target only moves
+  // on a successful Update.end(true), so aborting costs nothing but the attempt.
+  uint8_t buf[1024]; int written = 0, lastPct = -1;
+  unsigned long lastProgress = millis();
   int barX = 30, barY = 120, barW = SCREEN_W - 60, barH = 16;
+  tft.fillRect(barX, barY, barW, barH, COL_TRACK);   // empty track, painted once
   while (written < len) {
+    // Checked first, on EVERY path: a drained-and-closed connection is over now,
+    // and a silent-but-open one gets OTA_STALL_MS. Doing this at the top means no
+    // combination of empty reads can slip past it into an unbounded spin.
     int avail = stream->available();
-    if (avail) {
-      int r = stream->readBytes(buf, min((int)sizeof(buf), avail));
-      Update.write(buf, r); written += r;
-      int pct = (written * 100) / len;
-      tft.fillRect(barX, barY, barW, barH, COL_TRACK);
+    bool dead = (avail <= 0 && !client.connected());
+    if (dead || millis() - lastProgress > OTA_STALL_MS) {
+      // Kept terse: g_diag.otaMsg is 48 bytes, and the leading "stalled at N%" is
+      // the part worth surviving truncation on /status. /logs gets the same text.
+      snprintf(m, sizeof m, "stalled at %d%% (%d/%d B)%s", (written * 100) / len, written, len,
+               dead ? " - closed" : "");
+      Update.abort(); http.end(); otaFailed(m, "update stalled"); return;
+    }
+    if (avail <= 0) { delay(1); continue; }
+
+    int r = stream->readBytes(buf, min((int)sizeof(buf), avail));
+    if (r <= 0) { delay(1); continue; }  // no bytes despite available() — let the timer run
+    if (Update.write(buf, r) != (size_t)r) {
+      snprintf(m, sizeof m, "write failed at %d/%d (%s)", written, len, Update.errorString());
+      Update.abort(); http.end(); otaFailed(m); return;
+    }
+    written += r;
+    lastProgress = millis();             // only real bytes reset the stall timer
+
+    int pct = (written * 100) / len;
+    if (pct != lastPct) {                // repaint only when the number actually changes
+      lastPct = pct;
       tft.fillRect(barX, barY, (pct * barW) / 100, barH, COL_ACCENT);
       tft.setTextDatum(MC_DATUM); tft.setTextColor(COL_TEXT, COL_BG); tft.setTextSize(1);
       tft.drawString(String(pct) + "%", CENTER_X, barY + barH + 14, 1);
       tft.setTextDatum(TL_DATUM);
     }
-    delay(1);
   }
   http.end();
-  if (Update.end(true)) { bootSplash("done - rebooting"); delay(1500); ESP.restart(); }
+  if (Update.end(true)) {
+    applog::add("ota: flashed %d bytes - rebooting", written);
+    bootSplash("done - rebooting"); delay(1500); ESP.restart();
+  }
+  snprintf(m, sizeof m, "finalize failed (%s)", Update.errorString());
+  otaFailed(m);
 }
 
 // Boot-time check with a touch Yes/No prompt (web /update and the periodic loop

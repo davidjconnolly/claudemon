@@ -65,3 +65,9 @@ static constexpr unsigned long POLL_SUB_MS   = 60000;  // subscription rate-limi
 
 // GitHub repo for OTA (update to your fork before first release).
 #define OTA_REPO "davidjconnolly/claudemon"
+
+// Abort a firmware download after this long with no bytes arriving. A healthy
+// download of the ~1.2 MB image finishes in well under a minute, so 30 s of
+// silence means the stream is dead — and without this the flash loop spins
+// forever behind "do not power off", which needs a physical power-cycle.
+static constexpr unsigned long OTA_STALL_MS = 30000;
