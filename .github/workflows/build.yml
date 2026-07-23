@@ -55,10 +55,9 @@ jobs:
     steps:
       - uses: actions/checkout@v4
         with: { fetch-depth: 0 }   # need the tag history to compute the next version
-      - uses: actions/setup-python@v5
-        with: { python-version: '3.x' }
-      - run: pip install --upgrade platformio
 
+      # Decided first, before the toolchain is installed: this only needs git,
+      # and everything after it exists solely to produce a release.
       # The opt-out is matched against the commit SUBJECT only. It used to be a
       # job-level `contains(github.event.head_commit.message, ...)`, which reads
       # the whole message — so a commit whose BODY merely mentioned the token
@@ -78,6 +77,12 @@ jobs:
             echo "skip=true" >> "$GITHUB_OUTPUT"
             echo "::notice::'[skip release]' in subject — landing without a release: $SUBJECT"
           fi
+
+      - uses: actions/setup-python@v5
+        if: steps.skip.outputs.skip != 'true'
+        with: { python-version: '3.x' }
+      - run: pip install --upgrade platformio
+        if: steps.skip.outputs.skip != 'true'
 
       - name: Decide the version to release
         id: ver
