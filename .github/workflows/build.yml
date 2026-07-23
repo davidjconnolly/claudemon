@@ -5,6 +5,7 @@ on:
     branches: [master, main]
     tags: ['v*']
   pull_request:
+  workflow_dispatch:   # manual "cut a release now" button (run it on main)
 
 jobs:
   build:
@@ -35,13 +36,13 @@ jobs:
   #
   # Devices OTA-flash whatever `releases/latest` points at (see otaFetchLatest in
   # src/main.cpp), so a release here reaches the hardware. Put [skip release] in
-  # the merge commit / squashed PR title to land a change without shipping it.
+  # the commit SUBJECT (the squashed PR title) to land a change without shipping
+  # it — see the skip step below for why the subject and not the whole message.
   release:
     needs: build
     if: >-
       startsWith(github.ref, 'refs/tags/v') ||
-      ((github.ref == 'refs/heads/main' || github.ref == 'refs/heads/master') &&
-       !contains(github.event.head_commit.message, '[skip release]'))
+      github.ref == 'refs/heads/main' || github.ref == 'refs/heads/master'
     runs-on: ubuntu-latest
     permissions: { contents: write }
     # Serialize, so two quick merges can't compute the same patch number. Note
@@ -58,8 +59,29 @@ jobs:
         with: { python-version: '3.x' }
       - run: pip install --upgrade platformio
 
+      # The opt-out is matched against the commit SUBJECT only. It used to be a
+      # job-level `contains(github.event.head_commit.message, ...)`, which reads
+      # the whole message — so a commit whose BODY merely mentioned the token
+      # skipped its own release. That is exactly how v0.2.10 got missed: the
+      # commit adding this feature documented the escape hatch in its body and
+      # thereby triggered it. A skipped release looks identical to a successful
+      # merge, so this failure is silent; keep the match narrow.
+      - name: Honour [skip release] in the commit subject
+        id: skip
+        run: |
+          set -euo pipefail
+          if [[ "$GITHUB_REF" == refs/tags/v* || "$GITHUB_EVENT_NAME" == workflow_dispatch ]]; then
+            exit 0        # an explicit tag or a manual run always releases
+          fi
+          SUBJECT=$(git log -1 --format=%s)
+          if [[ "$SUBJECT" == *"[skip release]"* ]]; then
+            echo "skip=true" >> "$GITHUB_OUTPUT"
+            echo "::notice::'[skip release]' in subject — landing without a release: $SUBJECT"
+          fi
+
       - name: Decide the version to release
         id: ver
+        if: steps.skip.outputs.skip != 'true'
         run: |
           set -euo pipefail
           if [[ "$GITHUB_REF" == refs/tags/v* ]]; then
@@ -88,12 +110,16 @@ jobs:
           echo "Releasing v$VER"
 
       - name: Build firmware stamped with the release version
+        if: steps.skip.outputs.skip != 'true'
         run: |
           export PLATFORMIO_BUILD_FLAGS='-DCLAUDEMON_VERSION=\"'"${{ steps.ver.outputs.version }}"'\"'
           pio run -e cyd
           cp .pio/build/cyd/firmware.bin claudemon-firmware.bin
 
+      # Gated too: without this, a skipped run would publish a tag named "v"
+      # from the empty version output.
       - uses: softprops/action-gh-release@v2
+        if: steps.skip.outputs.skip != 'true'
         with:
           tag_name: v${{ steps.ver.outputs.version }}   # created at this commit if new
           name: v${{ steps.ver.outputs.version }}
