@@ -58,14 +58,18 @@ jobs:
           set -euo pipefail
           if [[ "$GITHUB_REF" == refs/tags/v* ]]; then
             VER="${GITHUB_REF_NAME#v}"                       # tag push: honour it verbatim
+            # No existence check here: checkout fetches tags, so the tag that
+            # triggered this run is always present by definition.
           else
             LAST=$(git tag --list 'v*' --sort=-v:refname | head -n1)
             LAST="${LAST:-v0.0.0}"
             IFS=. read -r MAJ MIN PAT <<<"${LAST#v}"
             VER="$MAJ.$MIN.$((PAT + 1))"                     # merge to main: bump the patch
-          fi
-          if git rev-parse -q --verify "refs/tags/v$VER" >/dev/null; then
-            echo "::error::v$VER already exists" && exit 1
+            # A computed version that already exists means the bump raced with
+            # another release; fail rather than silently re-point an old tag.
+            if git rev-parse -q --verify "refs/tags/v$VER" >/dev/null; then
+              echo "::error::v$VER already exists" && exit 1
+            fi
           fi
           echo "version=$VER" >> "$GITHUB_OUTPUT"
           echo "Releasing v$VER"
