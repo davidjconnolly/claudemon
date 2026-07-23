@@ -266,7 +266,9 @@ Releases are cut automatically: every merge to `main` bumps the patch version of
 firmware stamped with it, and publishes `claudemon-firmware.bin` — which is what devices with auto-install then
 flash. Land a change *without* shipping it by putting `[skip release]` in the merge commit / squashed PR title.
 Minor and major bumps are manual: push a `v0.3.0` tag yourself and auto-releases continue from there. Local builds
-aren't stamped and report version `dev`.
+aren't stamped and report version `dev`. Merges land one release each unless they arrive in a burst — release runs
+are serialized and GitHub keeps only one queued, so a rapid third merge cancels the second's run and the following
+release carries both merges' code.
 
 ---
 

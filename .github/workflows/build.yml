@@ -44,7 +44,13 @@ jobs:
        !contains(github.event.head_commit.message, '[skip release]'))
     runs-on: ubuntu-latest
     permissions: { contents: write }
-    concurrency: release   # serialize, so two quick merges can't claim the same tag
+    # Serialize, so two quick merges can't compute the same patch number. Note
+    # GitHub only keeps ONE run pending per group: if a third merge lands while
+    # a second is still queued, the second is cancelled (shows up as a cancelled
+    # run, not a failure). Nothing is lost — the next release builds main HEAD,
+    # so it carries the skipped merge's code — but under a burst of merges you
+    # get one release covering several of them rather than one release each.
+    concurrency: release
     steps:
       - uses: actions/checkout@v4
         with: { fetch-depth: 0 }   # need the tag history to compute the next version
@@ -63,6 +69,13 @@ jobs:
           else
             LAST=$(git tag --list 'v*' --sort=-v:refname | head -n1)
             LAST="${LAST:-v0.0.0}"
+            # Only a strict vMAJOR.MINOR.PATCH tag can be bumped. Anything else
+            # matching the v* glob (v1, v0.3.0-rc1, a typo) would parse into a
+            # bogus version silently, so fail with something readable instead.
+            if [[ ! "$LAST" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+              echo "::error::newest tag '$LAST' is not vMAJOR.MINOR.PATCH; cannot auto-bump"
+              exit 1
+            fi
             IFS=. read -r MAJ MIN PAT <<<"${LAST#v}"
             VER="$MAJ.$MIN.$((PAT + 1))"                     # merge to main: bump the patch
             # A computed version that already exists means the bump raced with
