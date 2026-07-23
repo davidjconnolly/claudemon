@@ -336,10 +336,12 @@ void setup() {
   }, ARDUINO_EVENT_WIFI_STA_DISCONNECTED);
   applog::add("wifi: connected %s, ip %s, %d dBm", WiFi.SSID().c_str(),
               WiFi.localIP().toString().c_str(), (int)WiFi.RSSI());
+  // Server first: checkOTA() can block for the length of a firmware download, and
+  // nothing that long-running should run before the LAN interface even exists.
+  webcfg::begin();    // status + reconfiguration server on the LAN (http://claudemon.local)
   #ifndef WOKWI
   checkOTA();         // boot update prompt — hardware only (skips the Wokwi TLS hang)
   #endif
-  webcfg::begin();    // status + reconfiguration server on the LAN (http://claudemon.local)
 #endif
 
   buildPages();
@@ -554,31 +556,64 @@ void otaDownloadFlash(const String& url) {
   WiFiClientSecure client; client.setInsecure();
   HTTPClient http;
   http.setFollowRedirects(HTTPC_STRICT_FOLLOW_REDIRECTS);
-  if (!http.begin(client, url)) return;
+  if (!http.begin(client, url)) { applog::add("ota: connect failed"); return; }
   http.addHeader("User-Agent", "CYD-Claudemon");
-  if (http.GET() != 200) { http.end(); return; }
+  int code = http.GET();
+  if (code != 200) { http.end(); applog::add("ota: download HTTP %d", code); return; }
   int len = http.getSize();
+  if (len <= 0) {                        // chunked/unknown length: Update.begin can't size the write
+    http.end(); applog::add("ota: no content-length (%d)", len); return;
+  }
   WiFiClient* stream = http.getStreamPtr();
-  if (!Update.begin(len)) { http.end(); return; }
+  if (!Update.begin(len)) {
+    http.end(); applog::add("ota: begin failed (%s)", Update.errorString()); return;
+  }
 
-  uint8_t buf[1024]; int written = 0;
+  // Any failure below returns to the caller still running the CURRENT firmware:
+  // the download writes to the inactive partition and the boot target only moves
+  // on a successful Update.end(true), so aborting costs nothing but the attempt.
+  uint8_t buf[1024]; int written = 0, lastPct = -1;
+  unsigned long lastProgress = millis();
   int barX = 30, barY = 120, barW = SCREEN_W - 60, barH = 16;
+  tft.fillRect(barX, barY, barW, barH, COL_TRACK);   // empty track, painted once
   while (written < len) {
+    // Checked first, on EVERY path: a drained-and-closed connection is over now,
+    // and a silent-but-open one gets OTA_STALL_MS. Doing this at the top means no
+    // combination of empty reads can slip past it into an unbounded spin.
     int avail = stream->available();
-    if (avail) {
-      int r = stream->readBytes(buf, min((int)sizeof(buf), avail));
-      Update.write(buf, r); written += r;
-      int pct = (written * 100) / len;
-      tft.fillRect(barX, barY, barW, barH, COL_TRACK);
+    bool dead = (avail <= 0 && !client.connected());
+    if (dead || millis() - lastProgress > OTA_STALL_MS) {
+      applog::add("ota: stalled at %d%% (%d/%d bytes)%s", (written * 100) / len, written, len,
+                  dead ? " - connection closed" : "");
+      Update.abort(); http.end(); bootSplash("update stalled"); delay(1500); return;
+    }
+    if (avail <= 0) { delay(1); continue; }
+
+    int r = stream->readBytes(buf, min((int)sizeof(buf), avail));
+    if (r <= 0) { delay(1); continue; }  // no bytes despite available() — let the timer run
+    if (Update.write(buf, r) != (size_t)r) {
+      applog::add("ota: write failed at %d/%d (%s)", written, len, Update.errorString());
+      Update.abort(); http.end(); bootSplash("update failed"); delay(1500); return;
+    }
+    written += r;
+    lastProgress = millis();             // only real bytes reset the stall timer
+
+    int pct = (written * 100) / len;
+    if (pct != lastPct) {                // repaint only when the number actually changes
+      lastPct = pct;
       tft.fillRect(barX, barY, (pct * barW) / 100, barH, COL_ACCENT);
       tft.setTextDatum(MC_DATUM); tft.setTextColor(COL_TEXT, COL_BG); tft.setTextSize(1);
       tft.drawString(String(pct) + "%", CENTER_X, barY + barH + 14, 1);
       tft.setTextDatum(TL_DATUM);
     }
-    delay(1);
   }
   http.end();
-  if (Update.end(true)) { bootSplash("done - rebooting"); delay(1500); ESP.restart(); }
+  if (Update.end(true)) {
+    applog::add("ota: flashed %d bytes - rebooting", written);
+    bootSplash("done - rebooting"); delay(1500); ESP.restart();
+  }
+  applog::add("ota: finalize failed (%s)", Update.errorString());
+  bootSplash("update failed"); delay(1500);
 }
 
 // Boot-time check with a touch Yes/No prompt (web /update and the periodic loop
