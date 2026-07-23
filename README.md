@@ -262,6 +262,14 @@ When on, a newer release is flashed automatically — at boot and on the ~6-hour
 flagged on the status page; the device reboots to flash it and your settings are kept. Leave it off to keep the
 touch **YES/NO** prompt at boot (and the manual **Check for update** button on the status page).
 
+Releases are cut automatically: every merge to `main` bumps the patch version off the newest `v*` tag, builds the
+firmware stamped with it, and publishes `claudemon-firmware.bin` — which is what devices with auto-install then
+flash. Land a change *without* shipping it by putting `[skip release]` in the merge commit / squashed PR title.
+Minor and major bumps are manual: push a `v0.3.0` tag yourself and auto-releases continue from there. Local builds
+aren't stamped and report version `dev`. Merges land one release each unless they arrive in a burst — release runs
+are serialized and GitHub keeps only one queued, so a rapid third merge cancels the second's run and the following
+release carries both merges' code.
+
 ---
 
 ## How it works
