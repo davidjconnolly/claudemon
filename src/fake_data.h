@@ -27,6 +27,7 @@ inline void fill(AppData& d) {
   d.sub.hasScoped      = true;
   d.sub.scopedPct      = 14 + (int)((t / 60) % 18);
   d.sub.scopedResetAt  = d.sub.weeklyResetAt;
+  d.sub.scopedUpdatedAt = millis();
   strncpy(d.sub.scopedLabel, "Fable", sizeof(d.sub.scopedLabel) - 1);
   strncpy(d.sub.plan, "MAX 5x", sizeof(d.sub.plan) - 1);
   d.sub.lastUpdated    = millis();

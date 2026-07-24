@@ -49,6 +49,15 @@ static uint8_t downgradedPolls = 0;
 static constexpr uint8_t DOWNGRADE_AFTER_MISSES = 3;
 static uint8_t knownGoodMisses = 0;
 
+// When strategy 0 stays unavailable long enough to downgrade (a 429 storm on the
+// shared OAuth token, in practice), the header probes that take over carry NO
+// model-scoped window — so the Fable bar would blank. But that window barely
+// moves over the ~10-30 min a downgrade lasts, so we retain the last-known scoped
+// reading and only drop it once it is this stale. Bounds the "frozen bar forever"
+// risk that the old unconditional clear was guarding against; an authoritative
+// strategy-0 200 that lacks the window still clears it immediately (see poll()).
+static constexpr unsigned long SCOPED_STALE_MS = 2UL * 60 * 60 * 1000;   // 2 h
+
 // Usage-miss logging is deduped by the HTTP code, not by "first miss of a
 // streak": a streak whose code changes mid-way (e.g. 500 then -11 then the
 // downgrade) must record BOTH codes — that transition is exactly the blind spot
@@ -100,12 +109,16 @@ inline bool parseHeaders(String* h, SessionUsage& u) {
   long sa = epochFromHeader(h[1]); if (sa > 0) u.sessionResetAt = sa;
   long wa = epochFromHeader(h[3]); if (wa > 0) u.weeklyResetAt  = wa;
   u.limited     = (h[4] == "limited");
-  // The headers carry no model-scoped window, so a header-sourced reading
-  // clears it — otherwise a permanent fall-back from strategy 0 would leave a
-  // frozen scoped bar on-device indefinitely. (The UI just hides the row; the
-  // bar returns on the next successful usage-endpoint poll.)
-  u.hasScoped = false;
-  u.scopedPct = 0; u.scopedResetAt = 0; u.scopedLabel[0] = 0;
+  // The headers carry no model-scoped window. Rather than blank the Fable bar on
+  // every probe reading — a transient strategy-0 429 storm downgrades us here for
+  // ~10-30 min, and the weekly-scoped window barely moves in that time — retain
+  // the last-known value and only drop it once it goes stale (SCOPED_STALE_MS).
+  // That bounds the "frozen forever" case the old unconditional clear guarded
+  // against, while surviving the downgrades that were hiding the bar for real.
+  if (u.hasScoped && millis() - u.scopedUpdatedAt >= SCOPED_STALE_MS) {
+    u.hasScoped = false;
+    u.scopedPct = 0; u.scopedResetAt = 0; u.scopedLabel[0] = 0;
+  }
   u.valid       = true;
   u.lastUpdated = millis();
   return true;
@@ -168,6 +181,7 @@ inline int probeUsage(SessionUsage& u, bool& got) {
       const char* name = l["scope"]["model"]["display_name"] | "Model";
       snprintf(u.scopedLabel, sizeof(u.scopedLabel), "%s", name);
       u.scopedPct = pct;  if (rst > 0) u.scopedResetAt = rst;  sawScoped = true;
+      u.scopedUpdatedAt = millis();       // reset the staleness clock (retain across downgrades)
     }
     if (raw >= 100.0f) lim = true;               // pre-clamp value
   }

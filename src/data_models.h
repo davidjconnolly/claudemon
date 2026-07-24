@@ -25,6 +25,7 @@ struct SessionUsage {
   int   scopedPct      = 0;      // 0..100 utilization of the scoped weekly window
   long  scopedResetAt  = 0;      // unix epoch (s) it resets (0=unknown)
   char  scopedLabel[12] = {0};   // scope.model.display_name, e.g. "Fable"
+  unsigned long scopedUpdatedAt = 0;  // millis() of last strategy-0 scoped read (staleness clock)
   // Plan label from the profile endpoint, e.g. "MAX 5x" (empty until fetched).
   char  plan[16]       = {0};
 };
