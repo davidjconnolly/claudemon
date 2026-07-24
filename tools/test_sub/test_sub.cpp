@@ -177,9 +177,15 @@ int main() {
   CHECK(u.sessionPct == 42 && u.weeklyPct == 7);
   CHECK(u.sessionResetAt == 1785200000L);
   CHECK(!u.limited);
-  CHECK(!u.hasScoped);                          // header reading clears the scoped bar
-  CHECK(u.scopedLabel[0] == 0);                 // ...rather than freezing stale Fable data
+  CHECK(u.hasScoped);                           // scoped bar RETAINED across the downgrade...
+  CHECK_STR(u.scopedLabel, "Fable");            // ...still the last-known Fable value, not blanked
   CHECK(sub::working == 1);                     // rediscovered count_tokens
+  // ...but a downgrade that outlasts SCOPED_STALE_MS finally drops the stale bar,
+  // so a genuinely-gone scoped window can't stay frozen forever.
+  g_millis += sub::SCOPED_STALE_MS + 1;
+  CHECK(sub::poll(u));                          // still on the header probe (endpoint still 404)
+  CHECK(!u.hasScoped);                          // now-stale scoped reading cleared
+  CHECK(u.scopedLabel[0] == 0);
 
   // --- invalid JSON and unrecognised shapes also fall through ---
   sub::working = -1;
@@ -259,7 +265,7 @@ int main() {
   }
   CHECK(sub::poll(u));                            // the DOWNGRADE_AFTER_MISSES-th miss fails over
   CHECK(sub::working == 1);                       // failed over to count_tokens
-  CHECK(!u.hasScoped);                            // bar hidden, not stale
+  CHECK(u.hasScoped);                             // Fable bar RETAINED (stale-tolerant), not blanked
   // --- upgrade retry: the periodic strategy-0 retry restores the endpoint and
   //     the bar returns — WITHOUT a reboot ---
   install(200, usageBody(70, 12, scopedLimit("Fable", 14).c_str()),
