@@ -4,7 +4,7 @@
 //
 //   today usage   -> usage_report/messages, 1d bucket, [start-of-day, now]
 //   hourly spark  -> usage_report/messages, 1h buckets, last 24h
-//   week tokens   -> usage_report/messages, 1d buckets, last 7d
+//   week tokens   -> usage_report/messages, 1d buckets, last 7d, by model
 //   cost + models -> cost_report, 1d buckets, [start-of-month, now], by model
 //
 // Token/amount field names are centralised so they're easy to correct against a
@@ -50,18 +50,28 @@ inline int callGet(const String& url, JsonDocument& doc) {
   return code;
 }
 
-// Sum all token kinds in one usage result row.
-inline uint64_t rowTokens(JsonObjectConst r) {
-  uint64_t in  = r["uncached_input_tokens"]    | (uint64_t)0;
-  uint64_t out = r["output_tokens"]            | (uint64_t)0;
-  uint64_t cr  = r["cache_read_input_tokens"]  | (uint64_t)0;
-  uint64_t cc  = r["cache_creation_input_tokens"] | (uint64_t)0;
+// Cache-creation tokens for one usage result row. The live API reports these
+// ONLY as a nested cache_creation{ephemeral_5m,ephemeral_1h} object — the flat
+// cache_creation_input_tokens field is read first purely as a compatibility
+// fallback. Reading just the flat field (as fetchToday did) silently scored
+// every cache write as zero, undercounting today's tokens and inflating the
+// cache-hit percentage.
+inline uint64_t rowCacheCreate(JsonObjectConst r) {
+  uint64_t cc = r["cache_creation_input_tokens"] | (uint64_t)0;
   if (cc == 0 && r["cache_creation"].is<JsonObjectConst>()) {
     JsonObjectConst o = r["cache_creation"];
     cc = (o["ephemeral_5m_input_tokens"] | (uint64_t)0)
        + (o["ephemeral_1h_input_tokens"] | (uint64_t)0);
   }
-  return in + out + cr + cc;
+  return cc;
+}
+
+// Sum all token kinds in one usage result row.
+inline uint64_t rowTokens(JsonObjectConst r) {
+  uint64_t in  = r["uncached_input_tokens"]    | (uint64_t)0;
+  uint64_t out = r["output_tokens"]            | (uint64_t)0;
+  uint64_t cr  = r["cache_read_input_tokens"]  | (uint64_t)0;
+  return in + out + cr + rowCacheCreate(r);
 }
 
 // --- Pagination + date helpers. The usage/cost API returns only ~7 time buckets
@@ -134,7 +144,7 @@ inline bool fetchToday(CostUsage& c) {
       in  += r["uncached_input_tokens"]    | (uint64_t)0;
       out += r["output_tokens"]            | (uint64_t)0;
       cr  += r["cache_read_input_tokens"]  | (uint64_t)0;
-      cc  += r["cache_creation_input_tokens"] | (uint64_t)0;
+      cc  += rowCacheCreate(r);            // nested cache_creation{} — see above
     }
   c.inputToday = in; c.outputToday = out;
   c.cacheReadToday = cr; c.cacheCreateToday = cc;
@@ -161,15 +171,57 @@ inline bool fetchHourlySpark(Sparkline& s) {
   return true;
 }
 
-// --- Last 7 days of tokens -> weekly total. ---
+// --- Per-model token cache (rolling 7 days), keyed by model id. -------------
+// The cost report carries no token counts, so the MODELS page used to render
+// "0 tok" under every bar. The usage report does carry them and supports
+// group_by=model, so fetchWeekTokens() below now asks for the breakdown it was
+// already paying for and stashes it here. The two calls land on different
+// poller ticks, so whichever runs second applies the join.
+struct ModelTokens { char name[32]; uint64_t tok; };
+static ModelTokens tokAcc[12];
+static int         nTokAcc = 0;
+
+// Fill c.models[].tokens from the cache. Leaves entries at 0 when the usage
+// report hasn't been fetched yet (first ~2 poll cycles after boot).
+inline void applyModelTokens(CostUsage& c) {
+  for (int i = 0; i < c.modelCount; i++) {
+    c.models[i].tokens = 0;
+    for (int k = 0; k < nTokAcc; k++)
+      if (strncmp(tokAcc[k].name, c.models[i].name, sizeof(tokAcc[k].name) - 1) == 0) {
+        c.models[i].tokens = tokAcc[k].tok;
+        break;
+      }
+  }
+}
+
+// --- Last 7 days of tokens -> weekly total + per-model breakdown. ---
 inline bool fetchWeekTokens(CostUsage& c) {
   time_t now = time(nullptr);
   uint64_t tot = 0;
-  bool ok = fetchPaged(usageUrl(now - 7 * 86400, now, "1d", nullptr, 8), [&](JsonObjectConst b) {
-    for (JsonObjectConst r : b["results"].as<JsonArrayConst>()) tot += rowTokens(r);
+  ModelTokens fresh[12]; int nFresh = 0;
+  bool ok = fetchPaged(usageUrl(now - 7 * 86400, now, "1d", "model", 8), [&](JsonObjectConst b) {
+    for (JsonObjectConst r : b["results"].as<JsonArrayConst>()) {
+      uint64_t t = rowTokens(r);
+      tot += t;
+      const char* model = r["model"] | (const char*)nullptr;
+      if (!model || !model[0]) continue;          // ungrouped/legacy row: total only
+      int f = -1;
+      for (int k = 0; k < nFresh; k++)
+        if (strncmp(fresh[k].name, model, sizeof(fresh[k].name) - 1) == 0) { f = k; break; }
+      if (f < 0 && nFresh < 12) {
+        f = nFresh++;
+        strncpy(fresh[f].name, model, sizeof(fresh[f].name) - 1);
+        fresh[f].name[sizeof(fresh[f].name) - 1] = 0;
+        fresh[f].tok = 0;
+      }
+      if (f >= 0) fresh[f].tok += t;
+    }
   });
-  if (!ok) return false;
+  if (!ok) return false;                          // keep the previous cache on a miss
   c.tokensWeek = tot;
+  nTokAcc = nFresh;
+  for (int k = 0; k < nFresh; k++) tokAcc[k] = fresh[k];
+  applyModelTokens(c);
   return true;
 }
 
@@ -194,8 +246,10 @@ inline bool fetchCostMonth(CostUsage& c, Sparkline& s) {
   url += "&limit=31";   // a full month in one page (API max); fetchPaged covers overflow
 
   double month = 0, week = 0, today = 0;
-  // Per-model accumulation (top 6 by cost), this billing month only.
-  struct Acc { char name[24]; double usd; uint64_t tok; };
+  // Per-model accumulation (top 6 by cost), rolling 7 days. Sized to hold a
+  // full model id — see ModelCost::name for why truncation here split one model
+  // across several bars.
+  struct Acc { char name[32]; double usd; };
   Acc acc[12]; int nAcc = 0;
   uint16_t daily[7] = {0};
 
@@ -210,10 +264,17 @@ inline bool fetchCostMonth(CostUsage& c, Sparkline& s) {
       double usd = (atof((r["amount"] | "0"))) / 100.0;   // cents -> USD
       bucketUsd += usd;
       if (daysAgo < 0 || daysAgo >= 7) continue;   // model breakdown = rolling 7 days
+      // group_by=description splits one model across many rows (one per token
+      // type / context window / service tier), each carrying the same `model`.
+      // Key on that so they collapse into a single bar; non-token line items
+      // (web search, code execution) have model=null and fall back to their
+      // description. Compare over the STORED capacity, not sizeof(name): a
+      // truncated stored name can never equal the full incoming id, which is
+      // what made every row its own entry.
       const char* model = r["model"] | (r["description"] | "other");
       int f = -1;
-      for (int k = 0; k < nAcc; k++) if (strncmp(acc[k].name, model, sizeof(acc[k].name)) == 0) { f = k; break; }
-      if (f < 0 && nAcc < 12) { f = nAcc++; strncpy(acc[f].name, model, sizeof(acc[f].name) - 1); acc[f].name[sizeof(acc[f].name)-1]=0; acc[f].usd = 0; acc[f].tok = 0; }
+      for (int k = 0; k < nAcc; k++) if (strncmp(acc[k].name, model, sizeof(acc[k].name) - 1) == 0) { f = k; break; }
+      if (f < 0 && nAcc < 12) { f = nAcc++; strncpy(acc[f].name, model, sizeof(acc[f].name) - 1); acc[f].name[sizeof(acc[f].name)-1]=0; acc[f].usd = 0; }
       if (f >= 0) acc[f].usd += usd;
     }
     if (inMonth)                     month += bucketUsd;
@@ -238,8 +299,8 @@ inline bool fetchCostMonth(CostUsage& c, Sparkline& s) {
     strncpy(c.models[k].name, acc[k].name, sizeof(c.models[k].name) - 1);
     c.models[k].name[sizeof(c.models[k].name)-1] = 0;
     c.models[k].costUsd = acc[k].usd;
-    c.models[k].tokens  = acc[k].tok;
   }
+  applyModelTokens(c);            // token counts come from the usage report
 
   // billing period end ≈ end of this month
   static const int dim[12] = {31,28,31,30,31,30,31,31,30,31,30,31};

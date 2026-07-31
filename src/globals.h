@@ -49,6 +49,12 @@ extern bool  otaAuto;            // auto-install newer firmware (boot + ~6h chec
 // True when budget alerts should fire (computed from cost vs budget).
 bool budgetExceeded();
 
+// True while the panel is (or has just been) touched. Defined in main.cpp; the
+// poller reads it to avoid starting a blocking HTTP call under the user's
+// finger — every call runs on the UI task, so one started mid-tap swallows the
+// whole gesture.
+bool touchBusy();
+
 // (Re)builds the active page list from available creds + pageMask.
 void buildPages();
 

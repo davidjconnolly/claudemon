@@ -23,6 +23,7 @@ class HTTPClient {
   MockResponse cur;
 public:
   void setTimeout(int) {}
+  void setConnectTimeout(int) {}
   void setReuse(bool) {}
   void setFollowRedirects(int) {}
   bool begin(WiFiClientSecure&, const String& url) {

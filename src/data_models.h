@@ -31,8 +31,14 @@ struct SessionUsage {
 };
 
 // One model's slice of cost/usage (admin Usage & Cost API, group_by=model).
+// name must hold a full model id ("claude-haiku-4-5-20251001" = 25 chars) —
+// the cost report emits one row per token type / context window / service tier,
+// all carrying the SAME model id, and they are merged by comparing this field.
+// At 24 bytes the id was truncated on store but compared against the full
+// incoming string, so every row became its own entry and the MODELS page drew
+// six identical bars for one model.
 struct ModelCost {
-  char     name[24] = {0};
+  char     name[32] = {0};
   double   costUsd  = 0;
   uint64_t tokens   = 0;
 };

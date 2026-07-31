@@ -146,6 +146,24 @@ inline bool tpPoint(int& sx, int& sy) {
 }
 #endif
 
+// --- Touch-activity gate for the poller ---------------------------------
+// Reads the XPT2046's latched PENIRQ flag rather than ts.touched(): it costs no
+// SPI traffic and, unlike a live read, is still set for a tap that has already
+// been released — exactly the case a blocking HTTP call would otherwise eat.
+// (Wokwi's capacitive panel has no IRQ line, so fall back to a live read.)
+// Bounded so a stuck latch degrades to "not busy" instead of wedging the poller.
+bool touchBusy() {
+  static unsigned long busySince = 0;
+#ifdef WOKWI
+  bool raw = tpTouched();
+#else
+  bool raw = ts.tirqTouched();
+#endif
+  if (!raw) { busySince = 0; return false; }
+  if (busySince == 0) busySince = millis();
+  return (millis() - busySince) < 10000UL;
+}
+
 // --- Page registry: only show pages whose data source is available. SETTINGS is
 //     NOT here — it's a separate gear-opened overlay, not a carousel page. ---
 void buildPages() {
