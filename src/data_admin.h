@@ -171,13 +171,32 @@ inline bool fetchHourlySpark(Sparkline& s) {
   return true;
 }
 
+// Merge key for a model id / cost-line description. Hashes the FULL incoming
+// string so merging never depends on the display buffer's size. Comparing the
+// STORED names instead forces a bad trade: an exact compare misses a match once
+// an id is longer than the buffer (the duplicate-bars bug this fixes), while a
+// capped compare can falsely merge two distinct ids that share a prefix. FNV-1a;
+// with <= 12 live entries a collision is ~1e-8, and the cost of one would be two
+// models sharing a bar — not memory-unsafe.
+inline uint32_t modelKey(const char* s) {
+  uint32_t h = 2166136261u;
+  while (*s) { h ^= (uint8_t)*s++; h *= 16777619u; }
+  return h;
+}
+
+// Copy a display name, always NUL-terminated; truncation is cosmetic only.
+inline void setName(char* dst, size_t n, const char* src) {
+  strncpy(dst, src, n - 1);
+  dst[n - 1] = 0;
+}
+
 // --- Per-model token cache (rolling 7 days), keyed by model id. -------------
 // The cost report carries no token counts, so the MODELS page used to render
 // "0 tok" under every bar. The usage report does carry them and supports
 // group_by=model, so fetchWeekTokens() below now asks for the breakdown it was
 // already paying for and stashes it here. The two calls land on different
 // poller ticks, so whichever runs second applies the join.
-struct ModelTokens { char name[32]; uint64_t tok; };
+struct ModelTokens { uint32_t key; uint64_t tok; };
 static ModelTokens tokAcc[12];
 static int         nTokAcc = 0;
 
@@ -187,10 +206,7 @@ inline void applyModelTokens(CostUsage& c) {
   for (int i = 0; i < c.modelCount; i++) {
     c.models[i].tokens = 0;
     for (int k = 0; k < nTokAcc; k++)
-      if (strncmp(tokAcc[k].name, c.models[i].name, sizeof(tokAcc[k].name) - 1) == 0) {
-        c.models[i].tokens = tokAcc[k].tok;
-        break;
-      }
+      if (tokAcc[k].key == c.models[i].key) { c.models[i].tokens = tokAcc[k].tok; break; }
   }
 }
 
@@ -205,15 +221,10 @@ inline bool fetchWeekTokens(CostUsage& c) {
       tot += t;
       const char* model = r["model"] | (const char*)nullptr;
       if (!model || !model[0]) continue;          // ungrouped/legacy row: total only
+      uint32_t key = modelKey(model);
       int f = -1;
-      for (int k = 0; k < nFresh; k++)
-        if (strncmp(fresh[k].name, model, sizeof(fresh[k].name) - 1) == 0) { f = k; break; }
-      if (f < 0 && nFresh < 12) {
-        f = nFresh++;
-        strncpy(fresh[f].name, model, sizeof(fresh[f].name) - 1);
-        fresh[f].name[sizeof(fresh[f].name) - 1] = 0;
-        fresh[f].tok = 0;
-      }
+      for (int k = 0; k < nFresh; k++) if (fresh[k].key == key) { f = k; break; }
+      if (f < 0 && nFresh < 12) { f = nFresh++; fresh[f].key = key; fresh[f].tok = 0; }
       if (f >= 0) fresh[f].tok += t;
     }
   });
@@ -246,10 +257,9 @@ inline bool fetchCostMonth(CostUsage& c, Sparkline& s) {
   url += "&limit=31";   // a full month in one page (API max); fetchPaged covers overflow
 
   double month = 0, week = 0, today = 0;
-  // Per-model accumulation (top 6 by cost), rolling 7 days. Sized to hold a
-  // full model id — see ModelCost::name for why truncation here split one model
-  // across several bars.
-  struct Acc { char name[32]; double usd; };
+  // Per-model accumulation (top 6 by cost), rolling 7 days. Merged on the hash
+  // of the full id; `name` is the display copy — see ModelCost.
+  struct Acc { uint32_t key; char name[32]; double usd; };
   Acc acc[12]; int nAcc = 0;
   uint16_t daily[7] = {0};
 
@@ -266,15 +276,14 @@ inline bool fetchCostMonth(CostUsage& c, Sparkline& s) {
       if (daysAgo < 0 || daysAgo >= 7) continue;   // model breakdown = rolling 7 days
       // group_by=description splits one model across many rows (one per token
       // type / context window / service tier), each carrying the same `model`.
-      // Key on that so they collapse into a single bar; non-token line items
-      // (web search, code execution) have model=null and fall back to their
-      // description. Compare over the STORED capacity, not sizeof(name): a
-      // truncated stored name can never equal the full incoming id, which is
-      // what made every row its own entry.
+      // Merge on the hash of that full id so they collapse into a single bar;
+      // non-token line items (web search, code execution) have model=null and
+      // fall back to their description.
       const char* model = r["model"] | (r["description"] | "other");
+      uint32_t key = modelKey(model);
       int f = -1;
-      for (int k = 0; k < nAcc; k++) if (strncmp(acc[k].name, model, sizeof(acc[k].name) - 1) == 0) { f = k; break; }
-      if (f < 0 && nAcc < 12) { f = nAcc++; strncpy(acc[f].name, model, sizeof(acc[f].name) - 1); acc[f].name[sizeof(acc[f].name)-1]=0; acc[f].usd = 0; }
+      for (int k = 0; k < nAcc; k++) if (acc[k].key == key) { f = k; break; }
+      if (f < 0 && nAcc < 12) { f = nAcc++; acc[f].key = key; setName(acc[f].name, sizeof(acc[f].name), model); acc[f].usd = 0; }
       if (f >= 0) acc[f].usd += usd;
     }
     if (inMonth)                     month += bucketUsd;
@@ -296,8 +305,8 @@ inline bool fetchCostMonth(CostUsage& c, Sparkline& s) {
       if (acc[b2].usd > acc[a].usd) { Acc t = acc[a]; acc[a] = acc[b2]; acc[b2] = t; }
   c.modelCount = min(nAcc, 6);
   for (int k = 0; k < c.modelCount; k++) {
-    strncpy(c.models[k].name, acc[k].name, sizeof(c.models[k].name) - 1);
-    c.models[k].name[sizeof(c.models[k].name)-1] = 0;
+    c.models[k].key = acc[k].key;
+    setName(c.models[k].name, sizeof(c.models[k].name), acc[k].name);
     c.models[k].costUsd = acc[k].usd;
   }
   applyModelTokens(c);            // token counts come from the usage report
