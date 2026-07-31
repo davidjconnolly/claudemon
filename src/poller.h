@@ -111,8 +111,13 @@ inline void tick() {
       slowPhase = (slowPhase + 1) % 3;
       if (g_diag.adminLastCode == 429) adminBackoffUntil = millis() + ADMIN_BACKOFF_MS;
     } else if (queued & WORK_SUB) {
-      queued &= ~WORK_SUB;
-      if (sub::poll(g_data.sub)) { g_diag.subLastOkMs = millis(); anyOk = true; }
+      // One reading can need several requests (upgrade retry -> known-good ->
+      // rediscovery). pollStep() does one and reports whether more remain; keep
+      // the item queued so the chain resumes on the NEXT loop iteration. Same
+      // wall-clock as the old back-to-back chain, but touch runs in between.
+      bool more = false;
+      if (sub::pollStep(g_data.sub, more)) { g_diag.subLastOkMs = millis(); anyOk = true; }
+      if (!more) queued &= ~WORK_SUB;
     }
     if (anyOk) offline_ind::recordSuccess();
   }

@@ -263,59 +263,107 @@ inline void refreshPlan(SessionUsage& u) {
   intervalMs = 24UL * 60UL * 60UL * 1000UL;          // success; re-check daily
 }
 
-// Run one reading. Ensures a fresh token first. Returns true on success.
-inline bool poll(SessionUsage& u) {
-  if (oauthToken.isEmpty()) return false;
-  oauth::refreshIfNeeded(oauthToken, oauthRefresh, oauthExpiresMs);
+// One strategy attempt. Returns 1 = got a reading, 0 = soft miss, <0 = auth error.
+inline int tryStrategy(SessionUsage& u, int s) {
+  bool got = false;
+  int code = (s == 0) ? probeUsage(u, got)
+           : (s == 1) ? probe(COUNT_TOKENS_PATH, COUNT_BODY, u, got)
+                      : probe(MESSAGES_PATH,    MSG_BODY,   u, got);
+  g_diag.subLastCode = code;
+  if (code == 401 || code == 403) { authError = true; return -code; }
+  authError = false;
+  // `got` covers both a parsed 200 and (for the probes) a 429 whose unified
+  // headers were still present.
+  if (got) {
+    // Strategy changes are otherwise invisible: an intra-poll failover still
+    // ends the poll with HTTP 200, so the transition-only event log never
+    // fires. Log them here (this is how a vanished Fable bar gets diagnosed).
+    if (working != s) applog::add("usage: strategy %d (was %d, HTTP %d)", s, working, code);
+    working = s;
+    knownGoodMisses = 0;              // any success resets the downgrade hysteresis
+    lastMissCode = 0;                 // ...and re-arms the deduped miss log
+    if (s == 0) downgradedPolls = 0;  // any path back to strategy 0 resets the retry clock
+    return 1;
+  }
+  return 0;
+}
 
-  // Advance the upgrade-retry clock once per poll TICK — not inside
-  // runStrategies(), which the auth-error path below can invoke twice.
-  if (working > 0) downgradedPolls++;
+// --- Resumable poll ---------------------------------------------------------
+// One reading can need several sequential requests: the periodic strategy-0
+// upgrade retry, the known-good attempt, then a 0->1->2 rediscovery if that
+// attempt was the one that finally tripped the downgrade — up to five, plus the
+// token refresh and the plan fetch. Run back-to-back on the UI task that is
+// tens of seconds of blocked loop(), which is exactly the swallowed-tap problem
+// the poller's one-item-per-iteration queue fixes for the admin calls.
+//
+// So the chain is a step machine instead: each pollStep() performs AT MOST one
+// request and reports whether more remain. The poller re-queues immediately
+// rather than waiting for the next cadence, so the chain still finishes in the
+// same wall-clock time as before — just with handleTouch() sampled between
+// requests instead of after all of them. No cadence, hysteresis, or logging
+// behaviour changes; only where the yields are.
+enum PollStep : uint8_t {
+  PS_IDLE = 0,   // between polls
+  PS_REFRESH,    // oauth::refreshIfNeeded
+  PS_UPGRADE,    // periodic strategy-0 retry while downgraded
+  PS_KNOWN,      // the known-good strategy
+  PS_DISCOVER,   // 0 -> 1 -> 2 rediscovery, one per step
+  PS_AUTHFIX,    // forced token refresh, then restart the chain once
+  PS_PLAN,       // cosmetic plan label
+  PS_DONE
+};
+static PollStep pollStep_    = PS_IDLE;
+static uint8_t  discoverS    = 0;      // next strategy to try in PS_DISCOVER
+static int      discoverCode = 0;      // strategy 0's code — the one worth logging
+static bool     authRetried  = false;  // the forced-refresh retry is once per poll
+static bool     pollOk       = false;  // result carried to PS_DONE
 
-  auto tryStrategy = [&](int s) -> int {
-    bool got = false;
-    int code = (s == 0) ? probeUsage(u, got)
-             : (s == 1) ? probe(COUNT_TOKENS_PATH, COUNT_BODY, u, got)
-                        : probe(MESSAGES_PATH,    MSG_BODY,   u, got);
-    g_diag.subLastCode = code;
-    if (code == 401 || code == 403) { authError = true; return -code; }
-    authError = false;
-    // `got` covers both a parsed 200 and (for the probes) a 429 whose unified
-    // headers were still present.
-    if (got) {
-      // Strategy changes are otherwise invisible: an intra-poll failover still
-      // ends the poll with HTTP 200, so the transition-only event log never
-      // fires. Log them here (this is how a vanished Fable bar gets diagnosed).
-      if (working != s) applog::add("usage: strategy %d (was %d, HTTP %d)", s, working, code);
-      working = s;
-      knownGoodMisses = 0;              // any success resets the downgrade hysteresis
-      lastMissCode = 0;                 // ...and re-arms the deduped miss log
-      if (s == 0) downgradedPolls = 0;  // any path back to strategy 0 resets the retry clock
-      return 1;
-    }
-    return 0;
-  };
+// Performs at most one request. `more` = call again to continue this reading;
+// the return value is meaningful only once `more` comes back false.
+inline bool pollStep(SessionUsage& u, bool& more) {
+  more = false;
+  if (oauthToken.isEmpty()) { pollStep_ = PS_IDLE; return false; }
 
-  auto runStrategies = [&]() -> bool {
-    // Downgraded? Periodically re-try the usage endpoint so a transient blip
-    // doesn't hide the model-scoped bar until the next reboot. Runs BEFORE the
-    // known-good strategy so a failed retry's HTTP code is overwritten by the
-    // real result below.
-    if (working > 0 && downgradedPolls >= UPGRADE_RETRY_POLLS) {
+  if (pollStep_ == PS_IDLE) {             // start of a new reading
+    // Advance the upgrade-retry clock once per poll TICK — not per step, and
+    // not inside the strategy chain, which the auth-error path restarts.
+    if (working > 0) downgradedPolls++;
+    authRetried = false; pollOk = false;
+    discoverS = 0; discoverCode = 0;
+    pollStep_ = PS_REFRESH;
+  }
+
+  for (;;) {                              // fall through request-free steps
+    switch (pollStep_) {
+
+    case PS_REFRESH:
+      oauth::refreshIfNeeded(oauthToken, oauthRefresh, oauthExpiresMs);
+      pollStep_ = PS_UPGRADE;
+      more = true; return false;          // may have spent a request — yield
+
+    case PS_UPGRADE: {
+      // Downgraded? Periodically re-try the usage endpoint so a transient blip
+      // doesn't hide the model-scoped bar until the next reboot. Runs BEFORE the
+      // known-good strategy so a failed retry's HTTP code is overwritten by the
+      // real result below.
+      if (!(working > 0 && downgradedPolls >= UPGRADE_RETRY_POLLS)) { pollStep_ = PS_KNOWN; break; }
       downgradedPolls = 0;
-      int r = tryStrategy(0);
-      if (r == 1) return true;            // back on the usage endpoint
-      if (r < 0)  return false;           // auth error; handled by the caller
+      int r = tryStrategy(u, 0);
+      if (r == 1) { pollOk = true; pollStep_ = PS_PLAN; more = true; return false; }
+      if (r < 0)  { pollStep_ = PS_AUTHFIX;             more = true; return false; }
       // r == 0: the retry failed and its HTTP code is about to be overwritten
       // by the known-good strategy below. Log it here so a device stuck
       // downgraded (strategy 0 persistently failing) isn't diagnostically dark.
       if (newMissCode(g_diag.subLastCode))
         applog::add("usage: strategy 0 retry miss (HTTP %d)", g_diag.subLastCode);
+      pollStep_ = PS_KNOWN; more = true; return false;
     }
-    if (working >= 0) {                   // use the known-good strategy
-      int r = tryStrategy(working);
-      if (r == 1) return true;
-      if (r < 0)  return false;           // auth error
+
+    case PS_KNOWN: {
+      if (working < 0) { pollStep_ = PS_DISCOVER; break; }
+      int r = tryStrategy(u, working);
+      if (r == 1) { pollOk = true; pollStep_ = PS_PLAN; more = true; return false; }
+      if (r < 0)  { pollStep_ = PS_AUTHFIX;             more = true; return false; }
       // Soft failure. Don't abandon a known-good strategy on the first miss:
       // dropping strategy 0 wipes the model-scoped ("Fable") bar and blocks its
       // return for UPGRADE_RETRY_POLLS, so a single transient blip blanks the
@@ -328,38 +376,66 @@ inline bool poll(SessionUsage& u) {
       // so a streak whose code shifts mid-way records each distinct failure.
       if (newMissCode(g_diag.subLastCode))
         applog::add("usage: strategy %d miss (HTTP %d)", working, g_diag.subLastCode);
-      if (++knownGoodMisses < DOWNGRADE_AFTER_MISSES) return false;
+      if (++knownGoodMisses < DOWNGRADE_AFTER_MISSES) { pollStep_ = PS_DONE; more = true; return false; }
       working = -1;                       // it really stopped working; rediscover
+      pollStep_ = PS_DISCOVER; more = true; return false;
     }
-    int usageCode = 0;                    // strategy 0's code — the one worth logging
-    for (int s = 0; s <= 2; s++) {        // discover cheapest working strategy
-      int r = tryStrategy(s);
-      if (s == 0) usageCode = g_diag.subLastCode;
-      if (r == 1) return true;
-      if (r < 0)  return false;
+
+    case PS_DISCOVER: {
+      if (discoverS > 2) {
+        // Every strategy failed — the discovery path (boot before any strategy is
+        // known-good, or the rediscovery right after a downgrade). The other miss
+        // logs don't cover this path and the poller records only auth codes, so a
+        // real WiFi/TLS outage would otherwise leave the event log silent. Report
+        // strategy 0's code (not the loop's last, which is the messages probe's) —
+        // deduped like the other misses so a sustained -11/5xx storm writes one line.
+        if (newMissCode(discoverCode))
+          applog::add("usage: all strategies down (strategy 0 HTTP %d)", discoverCode);
+        pollStep_ = PS_DONE; break;
+      }
+      int s = discoverS++;
+      int r = tryStrategy(u, s);
+      if (s == 0) discoverCode = g_diag.subLastCode;
+      if (r == 1) { pollOk = true; pollStep_ = PS_PLAN; more = true; return false; }
+      if (r < 0)  { pollStep_ = PS_AUTHFIX;             more = true; return false; }
+      more = true; return false;          // stay here for the next strategy
     }
-    // Every strategy failed — the discovery path (boot before any strategy is
-    // known-good, or the inline rediscovery right after a downgrade). The other
-    // miss logs don't cover this path and the poller records only auth codes, so
-    // a real WiFi/TLS outage would otherwise leave the event log silent. Report
-    // strategy 0's code (not the loop's last, which is the messages probe's) —
-    // deduped like the other misses so a sustained -11/5xx storm writes one line.
-    if (newMissCode(usageCode))
-      applog::add("usage: all strategies down (strategy 0 HTTP %d)", usageCode);
-    return false;
-  };
 
-  bool ok = runStrategies();
-  // A 401/403 means the access token was rejected even though our expiry clock
-  // thought it was fine (the token can be rotated out from under us by the
-  // Claude Code that shares this login). Force one refresh and retry before
-  // giving up, so the device self-heals whenever its refresh token is still good.
-  if (!ok && authError && oauth::refresh(oauthToken, oauthRefresh, oauthExpiresMs))
-    ok = runStrategies();
+    case PS_AUTHFIX:
+      // A 401/403 means the access token was rejected even though our expiry clock
+      // thought it was fine (the token can be rotated out from under us by the
+      // Claude Code that shares this login). Force one refresh and retry the whole
+      // chain before giving up, so the device self-heals whenever its refresh
+      // token is still good.
+      if (authRetried || !authError) { pollStep_ = PS_DONE; break; }
+      authRetried = true;
+      if (!oauth::refresh(oauthToken, oauthRefresh, oauthExpiresMs)) {
+        pollStep_ = PS_DONE; more = true; return false;
+      }
+      discoverS = 0; discoverCode = 0;
+      pollStep_ = PS_UPGRADE; more = true; return false;
 
-  if (ok) refreshPlan(u);                 // cosmetic; never affects the reading
+    case PS_PLAN:
+      refreshPlan(u);                     // cosmetic; never affects the reading
+      pollStep_ = PS_DONE;
+      more = true; return false;
 
-  u.authError = authError;                // surface for the UI banner
+    case PS_DONE:
+    default:
+      pollStep_ = PS_IDLE;
+      u.authError = authError;            // surface for the UI banner
+      more = false;
+      return pollOk;
+    }
+  }
+}
+
+// Blocking form: drive the whole chain to completion in one call. Keeps the
+// original semantics for callers that don't care about yielding (the host
+// tests, and anything that wants a reading synchronously).
+inline bool poll(SessionUsage& u) {
+  bool more = true, ok = false;
+  while (more) ok = pollStep(u, more);
   return ok;
 }
 
