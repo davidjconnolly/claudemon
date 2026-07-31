@@ -10,6 +10,11 @@ static unsigned long tick = 0;
 // only when it actually changes — never on a fixed timer.
 static int  lastView = -1, lCount = -1;
 static long lCents[6] = {0};
+// Tokens are joined in from a *different* admin call than the cost, so they can
+// land on a tick where no cent value moved. Without them in the change check
+// the page would keep showing the stale "0 tok" line until a cost happened to
+// change.
+static uint64_t lTokens[6] = {0};
 
 inline void run() {
   if (modeChanged) {
@@ -26,8 +31,10 @@ inline void run() {
   bool changed = (view != lastView);
   if (view == 3) {
     if (c.modelCount != lCount) changed = true;
-    for (int i = 0; i < c.modelCount && i < 6; i++)
+    for (int i = 0; i < c.modelCount && i < 6; i++) {
       if ((long)(c.models[i].costUsd * 100 + 0.5) != lCents[i]) changed = true;
+      if (c.models[i].tokens != lTokens[i]) changed = true;
+    }
   }
   if (!changed) return;
   lastView = view;
@@ -42,7 +49,8 @@ inline void run() {
 
   int y = 26;
   for (int i = 0; i < c.modelCount && y < ui::CONTENT_B - 24; i++) {
-    lCents[i] = (long)(c.models[i].costUsd * 100 + 0.5);
+    lCents[i]  = (long)(c.models[i].costUsd * 100 + 0.5);
+    lTokens[i] = c.models[i].tokens;
     ui::label(c.models[i].name, 6, y, COL_ACCENT, 1);
     ui::label(fmtUsd(c.models[i].costUsd).c_str(), SCREEN_W - 6, y, offline_ind::tintColor(COL_ACCENT), 1, TR_DATUM);
     int pct = (int)(c.models[i].costUsd * 100 / mx);

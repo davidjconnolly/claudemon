@@ -27,6 +27,7 @@ unsigned long g_millis = 1000;
 EspClass ESP;
 bool getLocalTime(struct tm*, uint32_t) { return false; }
 std::vector<MockResponse> g_mockResponses;
+int g_requestCount = 0;
 
 #include "data_sub.h"
 
@@ -288,6 +289,46 @@ int main() {
           200, profileBody("claude_pro", "default_claude_pro"));
   CHECK(sub::poll(u));
   CHECK(sub::working == 0 && u.sessionPct == 50); // endpoint back -> reconfigured
+
+  // --- stepped poll: at most ONE request per pollStep() -----------------------
+  // The whole point of the step machine is that the UI task is never blocked for
+  // several sequential timeouts. Drive the WORST case — a downgrade that trips
+  // the 0->1->2 rediscovery inside the same reading — and assert that no single
+  // step ever issues more than one request, while the end state still matches
+  // what the blocking poll() produced above.
+  {
+    sub::working = 0; sub::knownGoodMisses = 0; sub::downgradedPolls = 0;
+    install(200, usageBody(70, 12, scopedLimit("Fable", 14).c_str()),
+            200, profileBody("claude_max", "default_claude_max_5x"));
+    CHECK(sub::poll(u));
+    CHECK(sub::working == 0);
+
+    install(500, "", 500, "");                   // everything down: forces the full chain
+    int steps = 0, worst = 0, total = 0;
+    for (int p = 0; p < sub::DOWNGRADE_AFTER_MISSES; p++) {
+      bool more = true;
+      while (more) {
+        g_requestCount = 0;
+        sub::pollStep(u, more);
+        if (g_requestCount > worst) worst = g_requestCount;
+        total += g_requestCount;
+        steps++;
+        CHECK(steps < 64);                       // must terminate, not spin
+      }
+    }
+    CHECK(worst <= 1);                           // THE invariant this refactor exists for
+    CHECK(sub::working == -1);                   // downgraded then rediscovery found nothing
+    printf("  (worst case: %d requests over %d steps, max %d per step)\n", total, steps, worst);
+
+    // ...and a stepped poll still reaches the same result as the blocking one.
+    install(200, usageBody(50, 8, ""),
+            200, profileBody("claude_pro", "default_claude_pro"));
+    bool more = true;
+    bool ok = false;
+    while (more) ok = sub::pollStep(u, more);
+    CHECK(ok);
+    CHECK(sub::working == 0 && u.sessionPct == 50);
+  }
 
   if (fails) { printf("%d check(s) FAILED\n", fails); return 1; }
   printf("all checks passed\n");

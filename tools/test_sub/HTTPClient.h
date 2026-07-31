@@ -19,10 +19,15 @@ struct MockResponse {
 };
 extern std::vector<MockResponse> g_mockResponses;
 
+// Counts every request the transport serves. Lets a test assert the poller's
+// "at most one request per step" invariant rather than just the end state.
+extern int g_requestCount;
+
 class HTTPClient {
   MockResponse cur;
 public:
   void setTimeout(int) {}
+  void setConnectTimeout(int) {}
   void setReuse(bool) {}
   void setFollowRedirects(int) {}
   bool begin(WiFiClientSecure&, const String& url) {
@@ -33,8 +38,8 @@ public:
   }
   void addHeader(const char*, const String&) {}
   void collectHeaders(const char**, int) {}
-  int POST(uint8_t*, size_t) { return cur.code; }
-  int GET() { return cur.code; }
+  int POST(uint8_t*, size_t) { g_requestCount++; return cur.code; }
+  int GET() { g_requestCount++; return cur.code; }
   String getString() { return String(cur.body.c_str()); }
   String header(const char* name) {
     auto it = cur.headers.find(name);

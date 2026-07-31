@@ -31,8 +31,16 @@ struct SessionUsage {
 };
 
 // One model's slice of cost/usage (admin Usage & Cost API, group_by=model).
+// The cost report emits one row per token type / context window / service tier,
+// all carrying the SAME model id, so rows have to be merged into one bar.
+// `key` is a hash of the FULL id and is what the merge compares; `name` is the
+// display copy and may be truncated. Keying on the stored name instead is what
+// caused the six-identical-bars bug: at 24 bytes "claude-haiku-4-5-20251001"
+// (25 chars) was truncated on store but compared against the full incoming
+// string, so no row ever matched an existing entry.
 struct ModelCost {
-  char     name[24] = {0};
+  uint32_t key      = 0;   // hash of the full id — merge/join on this, not name
+  char     name[32] = {0}; // display only; truncation here is cosmetic
   double   costUsd  = 0;
   uint64_t tokens   = 0;
 };

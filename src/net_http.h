@@ -22,7 +22,15 @@ inline int request(const char* method, const String& url,
   WiFiClientSecure client;
   client.setInsecure();                 // see README: TLS is not pinned
   HTTPClient http;
-  http.setTimeout(15000);
+  // These bound how long loop() is blocked, and therefore how long touch input
+  // is dead: every request runs on the UI task, and a tap that starts and ends
+  // inside a request is never sampled. A healthy call to the API answers in
+  // ~1-2 s, so the old 15 s ceiling bought nothing and cost up to 15 s of
+  // unresponsive screen per stalled connection (the poller runs several per
+  // minute — that is the 15-30 s "frozen stylus" window). Keep them tight and
+  // let the next poll retry instead.
+  http.setConnectTimeout(4000);
+  http.setTimeout(8000);
   http.setReuse(false);
   http.setFollowRedirects(HTTPC_STRICT_FOLLOW_REDIRECTS);
   if (!http.begin(client, url)) return -1;
