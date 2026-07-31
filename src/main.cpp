@@ -152,6 +152,10 @@ inline bool tpPoint(int& sx, int& sy) {
 // been released — exactly the case a blocking HTTP call would otherwise eat.
 // (Wokwi's capacitive panel has no IRQ line, so fall back to a live read.)
 // Bounded so a stuck latch degrades to "not busy" instead of wedging the poller.
+//
+// MUST be sampled every poller tick, not only when there is work to gate: the
+// press timestamp is cleared on the release edge, so skipping calls means the
+// release is never observed and the clock below goes stale.
 bool touchBusy() {
   static unsigned long busySince = 0;
 #ifdef WOKWI

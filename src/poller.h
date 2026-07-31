@@ -85,10 +85,18 @@ inline void tick() {
     queued |= WORK_SUB;
   }
 
+  // Sample the touch gate EVERY tick, not just when there is work to hold back:
+  // it tracks press/release transitions, so it has to see the release. Calling
+  // it only under `queued` let its internal clock go stale across an idle gap —
+  // after the stuck-latch fallback fired, a later genuine tap would be measured
+  // against the old timestamp, read as already-expired, and get no grace window
+  // at all. Sampling unconditionally is a volatile-bool read; it costs nothing.
+  bool busy = touchBusy();
+
   // Hold the queue while the screen is being touched. A poll started under the
   // stylus swallows the whole gesture; the data is minutes-stale anyway, so
   // deferring it by a few loop iterations costs nothing and keeps taps live.
-  if (queued && !touchBusy()) {
+  if (queued && !busy) {
     bool anyOk = false;
     if (queued & WORK_ADMIN_TODAY) {                 // --- exactly one call ---
       queued &= ~WORK_ADMIN_TODAY;
