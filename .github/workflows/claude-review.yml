@@ -1,56 +1,38 @@
-name: claude-review
+name: Claude Code Review
+
+# Thin caller — the review logic lives in davidjconnolly/shared-workflows so
+# every repo stays in lockstep. Edit it there, not here.
+#
+# The `permissions:` block is NOT optional. A reusable workflow cannot hold more
+# permission than its caller grants, and this repo's default_workflow_permissions
+# is "read" — drop the block and the reviewer is silently capped to read-only:
+# the job goes green and no review is ever posted.
+#
+# Requires repo secret CLAUDE_CODE_OAUTH_TOKEN (fanned out by hermes-config's
+# sync-claude-token.yml).
 
 on:
   pull_request:
-    types: [opened, synchronize]
+    types: [opened, synchronize, ready_for_review, reopened]
+
+# One review at a time per PR. The shared workflow's patch-id cache is
+# lookup-then-write with no locking, so two rebases seconds apart would both
+# miss and both review; this collapses them and drops superseded reviews.
+concurrency:
+  group: claude-review-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
 
 permissions:
   contents: read
   pull-requests: write
   issues: read
-  id-token: write   # the action mints its GitHub token via OIDC
+  id-token: write
 
 jobs:
   review:
-    # Skip PRs whose head branch lives in a fork (external contributors) —
-    # they can't read the token secret anyway, and Claude shouldn't auto-run
-    # on unreviewed external code in a public repo.
-    if: github.event.pull_request.head.repo.full_name == github.repository
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-        with:
-          fetch-depth: 0
-
-      - uses: anthropics/claude-code-action@v1
-        with:
-          # Auth via a Claude Pro/Max subscription token (generated with
-          # `claude setup-token`), NOT an Anthropic API key. Store it as the
-          # CLAUDE_CODE_OAUTH_TOKEN repo secret — see the workflow notes below.
-          claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
-          # PRs here are often opened by Dave's GitHub App agents; without this
-          # the action errors with "Workflow initiated by non-human actor".
-          allowed_bots: "dependabot,hermes-dave,claude-code-dave"
-          # 60 turns: re-reviews of multi-commit PRs (read diff + prior threads +
-          # post verdict) hit the old 30-turn cap ~half the time (see PR #8).
-          claude_args: --max-turns 60 --allowedTools "mcp__github_inline_comment__create_inline_comment,Bash(gh pr comment:*),Bash(gh pr diff:*),Bash(gh pr view:*),Bash(gh pr review:*)"
-          prompt: |
-            Review this pull request and leave concise, actionable feedback as
-            PR review comments. This is an ESP32 / Arduino firmware project built
-            with PlatformIO (envs: cyd, emulator, wokwi). Prioritise:
-              - correctness bugs and anything that could crash, hang, or reboot-loop on-device
-              - memory safety: buffer/snprintf sizes, Arduino String lifetimes, and pointer
-                scope for objects handed to WiFiManager / the web server
-              - build breakage across the cyd / emulator / wokwi envs and the
-                #ifdef guards (FAKE_DATA / WOKWI)
-              - consistency with the idioms and style of the surrounding code
-            Skip nitpicks and praise; only flag things worth changing. If the
-            diff looks clean, say so briefly.
-
-            Then submit a formal review verdict:
-            - If there are NO blocking issues (nothing that must be fixed before
-              merge — style nits and optional suggestions don't block), approve:
-              gh pr review ${{ github.event.pull_request.number }} --repo ${{ github.repository }} --approve --body "<one-line summary of why it's mergeable>"
-            - If there ARE blocking issues, do NOT approve. Your comments stand as
-              the verdict and the required-review check stays unsatisfied until a
-              clean revision is pushed.
+    uses: davidjconnolly/shared-workflows/.github/workflows/claude-code-review.yml@main
+    # Pass the one secret it needs, not `secrets: inherit` — inherit exposes
+    # every secret this repo holds to the called workflow, and the reviewer only
+    # ever needs the OAuth token.
+    secrets:
+      CLAUDE_CODE_OAUTH_TOKEN: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
