@@ -174,12 +174,18 @@ On **macOS**, current Claude Code versions store credentials only in the **Keych
 Keychain prompt — and copy the two printed values into the portal:
 
 ```bash
-# macOS Keychain — or open Keychain Access.app and search 'Claude'
-security find-generic-password -s "Claude Code-credentials" -w | python3 -c "import json,sys;o=json.load(sys.stdin)['claudeAiOauth'];print('ACCESS :',o['accessToken']);print('REFRESH:',o['refreshToken'])"
+# macOS Keychain — `-a "$USER"` matters: see the note below
+security find-generic-password -s "Claude Code-credentials" -a "$USER" -w | python3 -c "import json,sys;o=json.load(sys.stdin)['claudeAiOauth'];print('ACCESS :',o['accessToken']);print('REFRESH:',o['refreshToken'])"
 
 # Linux (or older macOS Claude Code): credentials file
 python3 -c "import json,os;o=json.load(open(os.path.expanduser('~/.claude/.credentials.json')))['claudeAiOauth'];print('ACCESS :',o['accessToken']);print('REFRESH:',o['refreshToken'])"
 ```
+
+**Pass `-a "$USER"`.** The Keychain can hold more than one `Claude Code-credentials` item: a stale one
+with account `unknown` can sit beside the live one under your macOS username. Without `-a`, `security`
+returns the first match, which can be the stale item, and its refresh token has already been used up, so
+the device shows `OAUTH EXPIRED` straight away. (In Keychain Access.app, pick the item whose **Account**
+is your username.)
 
 Access token looks like `sk-ant-oat01-…`, refresh like `sk-ant-ort01-…`. The access token expires every few
 hours; the refresh token lets the device renew it on its own (that's why you enter both). Treat them as your

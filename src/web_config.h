@@ -184,7 +184,7 @@ inline String statusHtml() {
          "computer, and Claude uses single-use (rotating) refresh tokens: when your Claude Code "
          "refreshes, the copy stored on the device is invalidated, so this can recur. To restore "
          "USAGE, re-enter the current tokens at <a href=/config>/config</a> &mdash; from the macOS "
-         "Keychain item <code>Claude Code-credentials</code>, or "
+         "Keychain item <code>Claude Code-credentials</code> (the one whose account is your username), or "
          "<code>~/.claude/.credentials.json</code> &rarr; <code>claudeAiOauth</code> on Linux / "
          "older Claude Code.</p>";
   }
@@ -269,9 +269,11 @@ inline String configHtml() {
   h += "<details><summary>Where do I get the OAuth tokens?</summary><p class=muted>"
        "Your Claude Code subscription credentials, on the computer where Claude Code is signed in.<br>"
        "macOS: Keychain item <code>Claude Code-credentials</code> &mdash; "
-       "<code>security find-generic-password -s \"Claude Code-credentials\" -w | python3 -c \"import json,sys;"
+       "<code>security find-generic-password -s \"Claude Code-credentials\" -a \"$USER\" -w | python3 -c \"import json,sys;"
        "o=json.load(sys.stdin)['claudeAiOauth'];print(o['accessToken']);print(o['refreshToken'])\"</code> "
-       "(click Allow on the Keychain prompt).<br>"
+       "(click Allow on the Keychain prompt). Keep the <code>-a \"$USER\"</code>: the Keychain can also "
+       "hold a stale item with account <code>unknown</code>, and without <code>-a</code> you may get "
+       "that one, whose tokens no longer work.<br>"
        "Linux / older Claude Code: <code>~/.claude/.credentials.json</code> &rarr; "
        "<code>claudeAiOauth.accessToken</code> / <code>.refreshToken</code>."
        "</p></details>";
