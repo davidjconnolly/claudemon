@@ -178,7 +178,14 @@ inline String statusHtml() {
   h += srcRow("Subscription (USAGE)",       g_data.subEnabled,   g_diag.subLastCode,   g_diag.subLastOkMs,   true);
   h += srcRow("Admin (COST/MODELS/TREND)",  g_data.adminEnabled, g_diag.adminLastCode, g_diag.adminLastOkMs, false, g_diag.adminLastErr);
   h += "</table>";
-  if (g_data.subEnabled && (g_diag.subLastCode == 401 || g_diag.subLastCode == 403)) {
+  if (g_data.subEnabled && oauthRefresh.isEmpty() &&
+      (g_diag.subLastCode == 401 || g_diag.subLastCode == 403)) {
+    // No refresh token = a `claude setup-token` token, which can't be renewed on-device.
+    h += "<p class=bad><b>&#9888; USAGE token rejected.</b></p>";
+    h += "<p class=muted>This looks like a <code>claude setup-token</code> token (no refresh token). "
+         "It lasts about a year and can't be renewed on the device. Run <code>claude setup-token</code> "
+         "again and paste the new token at <a href=/config>/config</a>.</p>";
+  } else if (g_data.subEnabled && (g_diag.subLastCode == 401 || g_diag.subLastCode == 403)) {
     h += "<p class=bad><b>&#9888; USAGE token expired &mdash; the device tried to refresh and could not.</b></p>";
     h += "<p class=muted>The subscription OAuth token is the same login as the Claude Code on your "
          "computer, and Claude uses single-use (rotating) refresh tokens: when your Claude Code "
@@ -262,12 +269,18 @@ inline String configHtml() {
 
   h += "<label>OAuth access token &mdash; current: " + mask(oauthToken) + "</label>"
        "<input name=oauth_at autocomplete=off placeholder='sk-ant-oat01-…'>";
-  h += "<label>OAuth refresh token &mdash; current: " + mask(oauthRefresh) + "</label>"
+  h += "<label>OAuth refresh token (blank for a setup-token) &mdash; current: " + mask(oauthRefresh) + "</label>"
        "<input name=oauth_rt autocomplete=off placeholder='sk-ant-ort01-…'>";
   if (!oauthToken.isEmpty() || !oauthRefresh.isEmpty())
     h += "<label class=rm><input type=checkbox name=oauth_clear>remove both OAuth tokens (turns off USAGE)</label>";
   h += "<details><summary>Where do I get the OAuth tokens?</summary><p class=muted>"
-       "Your Claude Code subscription credentials, on the computer where Claude Code is signed in.<br>"
+       "<b>Option A &mdash; <code>claude setup-token</code>:</b> run it, paste the "
+       "<code>sk-ant-oat01-</code> token as the access token, and leave the refresh token blank. "
+       "It's a separate token that lasts about a year, so it never gets invalidated when your Claude Code "
+       "refreshes its own login. It can't read the usage endpoint, though, so you get session and weekly % "
+       "but not the model-scoped (Fable) bar or the plan label.<br>"
+       "<b>Option B &mdash; your Claude Code login (everything, but shared):</b> "
+       "your Claude Code subscription credentials, on the computer where Claude Code is signed in.<br>"
        "macOS: Keychain item <code>Claude Code-credentials</code> &mdash; "
        "<code>security find-generic-password -s \"Claude Code-credentials\" -w | python3 -c \"import json,sys;"
        "o=json.load(sys.stdin)['claudeAiOauth'];print(o['accessToken']);print(o['refreshToken'])\"</code> "

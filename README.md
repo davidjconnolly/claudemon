@@ -163,13 +163,26 @@ later and the cost pages light up — no reflash):
 | Field | Powers | Where to get it |
 |---|---|---|
 | **OAuth access token** | `USAGE` | Claude Code subscription token — [see below](#oauth-access--refresh-tokens-usage-page) |
-| **OAuth refresh token** | `USAGE` | same source — lets the device renew the access token itself |
+| **OAuth refresh token** | `USAGE` | same source — lets the device renew the access token itself. Leave blank for a `claude setup-token` token |
 | **Admin API key** | `COST` · `MODELS` · `TREND` | Console **Admin key** `sk-ant-admin01…` — [see below](#admin-api-key-cost--models--trend) |
 | **Timezone** | clock / resets | POSIX `TZ` string — [see table below](#timezone-posix-tz) |
 
 #### OAuth access + refresh tokens (`USAGE` page)
 
-On **macOS**, current Claude Code versions store credentials only in the **Keychain** (the old
+There are two ways to fill these fields:
+
+| | **A. `claude setup-token`** | **B. Your Claude Code login** |
+|---|---|---|
+| Fields | access token only, refresh blank | access + refresh |
+| Lifetime | ~1 year, separate token | hours; device refreshes it |
+| Conflicts with Claude Code | never | yes, either side's refresh can invalidate the other (→ `OAUTH EXPIRED`) |
+| Session + weekly % | ✅ (via the `messages` probe, ~1 token/poll) | ✅ (usage endpoint, free) |
+| Fable bar + plan label | ❌ (the usage/profile endpoints 403 for this token) | ✅ |
+
+**A.** Run `claude setup-token`, paste the `sk-ant-oat01-…` it prints into **OAuth access token**, and leave
+the refresh field empty. When it expires, run it again and paste the new token.
+
+**B.** On **macOS**, current Claude Code versions store credentials only in the **Keychain** (the old
 `~/.claude/.credentials.json` file is no longer written). Run in a terminal — click **Allow** on the
 Keychain prompt — and copy the two printed values into the portal:
 

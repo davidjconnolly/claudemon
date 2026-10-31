@@ -330,6 +330,73 @@ int main() {
     CHECK(sub::working == 0 && u.sessionPct == 50);
   }
 
+  // --- `claude setup-token` token: inference-only scope -----------------------
+  // Live shape (2026-10-31): /api/oauth/usage + /profile 403, count_tokens 200
+  // with NO unified headers, messages 200 WITH them. No refresh token, and no
+  // expiry recorded. Must land on the messages probe, not an auth error.
+  {
+    std::map<std::string, std::string> hdrs = {
+      {"anthropic-ratelimit-unified-5h-utilization", "0.02"},
+      {"anthropic-ratelimit-unified-5h-reset",       "1793469600"},
+      {"anthropic-ratelimit-unified-7d-utilization", "0.11"},
+      {"anthropic-ratelimit-unified-7d-reset",       "1793588400"},
+      {"anthropic-ratelimit-unified-status",         "allowed"},
+    };
+    auto setupTokenShape = [&](const std::map<std::string, std::string>& h) {
+      g_mockResponses = {
+        {"/api/oauth/usage",   403, "{}"},
+        {"/api/oauth/profile", 403, "{}"},
+        {"count_tokens",       200, "{}"},          // 200, but no unified headers
+        {"/v1/messages",       200, "{}", h},
+      };
+    };
+    int64_t savedExp = oauthExpiresMs;
+    oauthRefresh = ""; oauthExpiresMs = 0;          // setup-token: nothing to refresh with
+    sub::working = -1; sub::knownGoodMisses = 0; sub::downgradedPolls = 0;
+    u.hasScoped = false; u.scopedLabel[0] = 0;
+
+    setupTokenShape(hdrs);
+    CHECK(sub::poll(u));
+    CHECK(sub::working == 2);                       // settled on the messages probe
+    CHECK(!u.authError);                            // NOT the expired-token banner
+    CHECK(u.sessionPct == 2 && u.weeklyPct == 11);
+    CHECK(u.sessionResetAt == 1793469600L);
+    CHECK(!u.hasScoped);                            // the usage endpoint is the only scoped source
+
+    // Steady state, including the periodic strategy-0 upgrade retry (which 403s
+    // again): every poll keeps reading, and none raises the auth flag.
+    for (int i = 0; i < sub::UPGRADE_RETRY_POLLS + 2; i++) {
+      CHECK(sub::poll(u));
+      CHECK(!u.authError);
+      CHECK(sub::working == 2);
+    }
+
+    // A token that is really revoked: the probes 403 too, so the banner shows.
+    g_mockResponses = {
+      {"/api/oauth/usage",   403, "{}"},
+      {"/api/oauth/profile", 403, "{}"},
+      {"count_tokens",       403, "{}"},
+      {"/v1/messages",       403, "{}"},
+    };
+    CHECK(!sub::poll(u));
+    CHECK(u.authError);
+
+    // A Keychain token that was on the usage endpoint and then gets a 403 there
+    // rediscovers in the SAME poll (no DOWNGRADE_AFTER_MISSES hold), so a scope
+    // change doesn't leave the reading stale for several polls.
+    sub::working = -1; sub::knownGoodMisses = 0; sub::downgradedPolls = 0;
+    install(200, usageBody(70, 12, ""), 200, profileBody("claude_pro", "default_claude_pro"));
+    CHECK(sub::poll(u));
+    CHECK(sub::working == 0);
+    setupTokenShape(hdrs);
+    CHECK(sub::poll(u));                            // first 403 poll still yields a reading
+    CHECK(sub::working == 2);
+    CHECK(!u.authError);
+    CHECK(u.sessionPct == 2);
+
+    oauthExpiresMs = savedExp;
+  }
+
   if (fails) { printf("%d check(s) FAILED\n", fails); return 1; }
   printf("all checks passed\n");
   return 0;

@@ -270,7 +270,14 @@ inline int tryStrategy(SessionUsage& u, int s) {
            : (s == 1) ? probe(COUNT_TOKENS_PATH, COUNT_BODY, u, got)
                       : probe(MESSAGES_PATH,    MSG_BODY,   u, got);
   g_diag.subLastCode = code;
-  if (code == 401 || code == 403) { authError = true; return -code; }
+  // A 403 from the usage endpoint is a SCOPE refusal, not a dead token: the
+  // long-lived `claude setup-token` token is inference-only, so /api/oauth/usage
+  // (and /profile) 403 while the messages probe still returns the unified
+  // headers (verified live 2026-10-31). Treat it as a soft miss so the chain
+  // falls through to the probes; a token that really is dead still trips the
+  // auth path there, because the probes 401/403 too.
+  bool scopeMiss = (s == 0 && code == 403);
+  if (!scopeMiss && (code == 401 || code == 403)) { authError = true; return -code; }
   authError = false;
   // `got` covers both a parsed 200 and (for the probes) a 429 whose unified
   // headers were still present.
@@ -376,7 +383,12 @@ inline bool pollStep(SessionUsage& u, bool& more) {
       // so a streak whose code shifts mid-way records each distinct failure.
       if (newMissCode(g_diag.subLastCode))
         applog::add("usage: strategy %d miss (HTTP %d)", working, g_diag.subLastCode);
-      if (++knownGoodMisses < DOWNGRADE_AFTER_MISSES) { pollStep_ = PS_DONE; more = true; return false; }
+      // A scope 403 on strategy 0 isn't a transient blip, so skip the hysteresis
+      // and rediscover now. If the token is actually dead the probes 401/403 in
+      // that same pass and the force-refresh (PS_AUTHFIX) still runs promptly.
+      // (Only strategy 0 reaches here with a 403; elsewhere it's an auth error.)
+      bool scope403 = (g_diag.subLastCode == 403);
+      if (++knownGoodMisses < DOWNGRADE_AFTER_MISSES && !scope403) { pollStep_ = PS_DONE; more = true; return false; }
       working = -1;                       // it really stopped working; rediscover
       pollStep_ = PS_DISCOVER; more = true; return false;
     }
