@@ -18,8 +18,8 @@ all pages at once.
 
 **This is the recommended way to verify landscape layout.** The Wokwi *VS Code
 extension* currently mis-renders the ILI9341 in landscape (a large horizontal
-offset) due to a bug in its bundled simulation engine — see the repo's "Known
-limitations". The host renderer here is pixel-accurate and matches hardware, so
+offset) due to a bug in its bundled simulation engine — see step 1b in the
+repo README. The host renderer here is pixel-accurate and matches hardware, so
 prefer it for layout work; use the Wokwi **cloud/web** sim (its engine is
 current and faithful) or real hardware for live behavior.
 
@@ -32,7 +32,7 @@ current and faithful) or real hardware for live behavior.
   renderer (and a correctly-configured emulator) show the intended look.
 - It verifies **layout**, not runtime behavior (touch, polling, OTA, the live
   Anthropic API). Use the Wokwi emulator or real hardware for those.
-- Pages covered: USAGE, COST, MODELS, TREND, CLAUDEMON, CLOCK, SYSTEM, SETTINGS,
+- Pages covered: USAGE, COST, MODELS, TREND, CLOCK, SYSTEM, SETTINGS,
   plus alert-state variants (`alt_*`). Sample data comes from `src/fake_data.h`.
 
 ## Keeping it in sync
