@@ -10,12 +10,15 @@
 #include <vector>
 
 #define HTTPC_STRICT_FOLLOW_REDIRECTS 1
+#define HTTPC_ERROR_READ_TIMEOUT (-11)
 
 struct MockResponse {
   std::string urlContains;
   int code = 404;
   std::string body = "{}";
   std::map<std::string, std::string> headers;
+  long stallAfter = -1;      // see WiFiClientSecure.h: peer goes silent after N body bytes
+  bool sendLength = true;    // false = close-delimited body (getSize() == -1)
 };
 extern std::vector<MockResponse> g_mockResponses;
 
@@ -30,17 +33,21 @@ public:
   void setConnectTimeout(int) {}
   void setReuse(bool) {}
   void setFollowRedirects(int) {}
-  bool begin(WiFiClientSecure&, const String& url) {
+  void useHTTP10(bool) {}
+  bool begin(WiFiClientSecure& client, const String& url) {
     cur = MockResponse{};                       // default: 404 {}
     for (auto& m : g_mockResponses)
       if (url.s.find(m.urlContains) != std::string::npos) { cur = m; break; }
+    client.body = cur.body;                     // the body is read off the "socket"
+    client.pos = 0;
+    client.stallAfter = cur.stallAfter;
     return true;
   }
+  int getSize() { return cur.sendLength ? (int)cur.body.size() : -1; }
   void addHeader(const char*, const String&) {}
   void collectHeaders(const char**, int) {}
   int POST(uint8_t*, size_t) { g_requestCount++; return cur.code; }
   int GET() { g_requestCount++; return cur.code; }
-  String getString() { return String(cur.body.c_str()); }
   String header(const char* name) {
     auto it = cur.headers.find(name);
     return it == cur.headers.end() ? String("") : String(it->second.c_str());

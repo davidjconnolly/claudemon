@@ -532,22 +532,17 @@ void loop() {
 // newer than the running build and ships a claudemon-firmware.bin asset. Records
 // the outcome in g_diag.otaMsg/otaCheckCode for the web /status page.
 bool otaFetchLatest(String& tagOut, String& urlOut) {
-  WiFiClientSecure client; client.setInsecure();
-  HTTPClient http;
-  http.setFollowRedirects(HTTPC_STRICT_FOLLOW_REDIRECTS);
-  if (!http.begin(client, "https://api.github.com/repos/" OTA_REPO "/releases/latest")) {
-    snprintf(g_diag.otaMsg, sizeof g_diag.otaMsg, "connect failed");
-    return false;
-  }
-  http.addHeader("User-Agent", "CYD-Claudemon");
-  int code = http.GET();
+  // Through net::get for its bounded body read: a bare http.getString() here
+  // can hang loop() for 2 h on a stalled response (see net::readBody).
+  net::Header hdrs[] = {{"User-Agent", "CYD-Claudemon"}};
+  String body;
+  int code = net::get("https://api.github.com/repos/" OTA_REPO "/releases/latest", hdrs, 1, body);
   g_diag.otaCheckCode = code;
   if (code != 200) {
-    http.end();
     snprintf(g_diag.otaMsg, sizeof g_diag.otaMsg, "check HTTP %d", code);
     return false;
   }
-  JsonDocument doc; deserializeJson(doc, http.getString()); http.end();
+  JsonDocument doc; deserializeJson(doc, body);
 
   String tag = doc["tag_name"] | "";
   if (tag.startsWith("v")) tag = tag.substring(1);

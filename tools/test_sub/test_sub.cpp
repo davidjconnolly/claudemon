@@ -330,6 +330,71 @@ int main() {
     CHECK(sub::working == 0 && u.sessionPct == 50);
   }
 
+  // --- net::readBody: the body read must ALWAYS return ---------------------
+  // HTTPClient::getString() spun with no deadline while the socket looked
+  // connected, which froze the device for 2 h on 2026-11-13. Each case below
+  // would have hung (or, before the mock clock, never terminated).
+  {
+    String out;
+    WiFiClientSecure c;
+
+    // Close-delimited body (HTTP/1.0, no Content-Length): read to the close.
+    c.body = "{\"ok\":1}"; c.pos = 0; c.stallAfter = -1;
+    CHECK(net::readBody(c, -1, out));
+    CHECK_STR(out.c_str(), "{\"ok\":1}");
+
+    // Sized body: stop at Content-Length even if more bytes are buffered.
+    c.body = "abcdefXYZ"; c.pos = 0;
+    CHECK(net::readBody(c, 6, out));
+    CHECK_STR(out.c_str(), "abcdef");
+
+    // Zero-length body returns at once.
+    CHECK(net::readBody(c, 0, out));
+    CHECK_STR(out.c_str(), "");
+
+    // Peer closes before Content-Length: a truncated body is a failure.
+    c.body = "abc"; c.pos = 0;
+    CHECK(!net::readBody(c, 10, out));
+
+    // THE bug: the peer goes silent mid-body but the socket stays "connected".
+    // Must give up after the idle window, not at the 2 h keepalive.
+    c.body = "{\"partial\":"; c.pos = 0; c.stallAfter = 5;
+    unsigned long t0 = g_millis;
+    CHECK(!net::readBody(c, -1, out));
+    unsigned long waited = g_millis - t0;
+    CHECK(waited >= net::BODY_IDLE_MS && waited <= net::BODY_IDLE_MS + 10);
+    c.stallAfter = -1;
+
+    // A trickle that never stalls long enough to trip the idle window still
+    // hits the total cap.
+    struct Trickle {
+      int available() { return 1; }
+      int read(uint8_t* b, size_t) { g_millis += 1000; b[0] = 'x'; return 1; }
+      uint8_t connected() { return 1; }
+    } trickle;
+    t0 = g_millis;
+    CHECK(!net::readBody(trickle, -1, out));
+    waited = g_millis - t0;
+    CHECK(waited >= net::BODY_TOTAL_MS && waited <= net::BODY_TOTAL_MS + 1000);
+
+    // End to end: a stalled usage response comes back from net::get as -11,
+    // the code the poller already logs and retries as a network blip.
+    g_mockResponses.clear();
+    MockResponse stalled;
+    stalled.urlContains = "/api/oauth/usage";
+    stalled.code = 200;
+    stalled.body = usageBody(70, 12, "");
+    stalled.stallAfter = 20;
+    stalled.sendLength = false;
+    g_mockResponses.push_back(stalled);
+    String body = "stale";
+    t0 = g_millis;
+    int code = net::get(String("https://") + ANTHROPIC_HOST + OAUTH_USAGE_PATH, nullptr, 0, body);
+    CHECK(code == HTTPC_ERROR_READ_TIMEOUT);
+    CHECK_STR(body.c_str(), "");
+    CHECK(g_millis - t0 <= net::BODY_IDLE_MS + 10);
+  }
+
   if (fails) { printf("%d check(s) FAILED\n", fails); return 1; }
   printf("all checks passed\n");
   return 0;
