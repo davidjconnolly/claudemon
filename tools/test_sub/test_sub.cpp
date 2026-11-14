@@ -330,6 +330,69 @@ int main() {
     CHECK(sub::working == 0 && u.sessionPct == 50);
   }
 
+  // --- boot after a power cycle: nothing retained, strategy 0 rate-limited ----
+  // 2026-11-14: the first poll after a restart hit a strategy-0 429, discovery
+  // fell to a header probe, and the Fable bar stayed blank for the full
+  // UPGRADE_RETRY_POLLS (~10 min). A transient miss with the bar blank must now
+  // retry strategy 0 on the very next poll.
+  auto boot = [](SessionUsage& fresh) {
+    fresh = SessionUsage{};
+    sub::working = -1; sub::downgradedPolls = 0; sub::knownGoodMisses = 0;
+  };
+  const std::string maxBody = usageBody(70, 12, scopedLimit("Fable", 14).c_str());
+  const std::string maxProfile = profileBody("claude_max", "default_claude_max_5x");
+  {
+    SessionUsage b;
+
+    // The reported case: 429 at boot, endpoint fine on the next poll.
+    boot(b);
+    install(429, "", 200, maxProfile, hdrs);
+    CHECK(sub::poll(b));
+    CHECK(sub::working == 1 && !b.hasScoped);    // header probe; bar blank
+    install(200, maxBody, 200, maxProfile, hdrs);
+    CHECK(sub::poll(b));                          // ONE poll later, not ten
+    CHECK(sub::working == 0);
+    CHECK(b.hasScoped && b.scopedPct == 14);
+    CHECK_STR(b.scopedLabel, "Fable");
+
+    // Still rate-limited on the quick retry: keep retrying every poll while the
+    // bar is blank (5xx and network errors count as transient too).
+    boot(b);
+    install(429, "", 200, maxProfile, hdrs);
+    CHECK(sub::poll(b));
+    install(503, "", 200, maxProfile, hdrs);
+    CHECK(sub::poll(b));                          // retry 503s; probe still answers
+    CHECK(sub::working == 1 && !b.hasScoped);
+    install(200, maxBody, 200, maxProfile, hdrs);
+    CHECK(sub::poll(b));
+    CHECK(sub::working == 0 && b.hasScoped);
+
+    // A permanent miss (404: no such endpoint) keeps the slow cadence, so a
+    // plan without the endpoint doesn't pay a second request on every poll.
+    boot(b);
+    install(404, "", 200, maxProfile, hdrs);
+    CHECK(sub::poll(b));
+    install(200, maxBody, 200, maxProfile, hdrs);
+    CHECK(sub::poll(b));
+    CHECK(sub::working == 1);                     // not retried yet
+    int polls = 1;
+    while (sub::working != 0 && polls <= sub::UPGRADE_RETRY_POLLS + 1) { CHECK(sub::poll(b)); polls++; }
+    CHECK(sub::working == 0);
+    CHECK(polls == sub::UPGRADE_RETRY_POLLS);
+
+    // A 429 downgrade with a RETAINED bar on screen also keeps the slow cadence:
+    // retention already covers the display, so don't double the request rate.
+    boot(b);
+    install(200, maxBody, 200, maxProfile, hdrs);
+    CHECK(sub::poll(b) && sub::working == 0 && b.hasScoped);
+    install(429, "", 200, maxProfile, hdrs);
+    for (int i = 0; i < sub::DOWNGRADE_AFTER_MISSES; i++) sub::poll(b);
+    CHECK(sub::working == 1 && b.hasScoped);      // downgraded, Fable retained
+    install(200, maxBody, 200, maxProfile, hdrs);
+    CHECK(sub::poll(b));
+    CHECK(sub::working == 1);                     // no quick retry: bar is showing
+  }
+
   // --- net::readBody: the body read must ALWAYS return ---------------------
   // HTTPClient::getString() spun with no deadline while the socket looked
   // connected, which froze the device for 2 h on 2026-11-13. Each case below

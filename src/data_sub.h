@@ -58,6 +58,20 @@ static uint8_t knownGoodMisses = 0;
 // strategy-0 200 that lacks the window still clears it immediately (see poll()).
 static constexpr unsigned long SCOPED_STALE_MS = 2UL * 60 * 60 * 1000;   // 2 h
 
+// Quick upgrade: retention only helps once there IS a reading to retain. After a
+// reboot there's none, so the boot discovery that lands on a 429 (strategy 0 is
+// rate-limited on ~1 poll in 3 on the shared token) fell to a header probe and
+// left the Fable bar blank for the full UPGRADE_RETRY_POLLS (~10 min, seen
+// 2026-11-14 after a power cycle). A miss like that says "endpoint fine, not
+// this time", so while the bar is blank retry strategy 0 on the NEXT poll.
+// Permanent misses (404, unparseable body: a plan or API without the endpoint)
+// keep the slow cadence, and so does a downgrade whose bar is still showing a
+// retained reading.
+inline bool transientMiss(int code) { return code == 429 || code >= 500 || code < 0; }
+inline void armQuickUpgrade(const SessionUsage& u, int strategy0Code) {
+  if (!u.hasScoped && transientMiss(strategy0Code)) downgradedPolls = UPGRADE_RETRY_POLLS - 1;
+}
+
 // Usage-miss logging is deduped by the HTTP code, not by "first miss of a
 // streak": a streak whose code changes mid-way (e.g. 500 then -11 then the
 // downgrade) must record BOTH codes — that transition is exactly the blind spot
@@ -356,6 +370,7 @@ inline bool pollStep(SessionUsage& u, bool& more) {
       // downgraded (strategy 0 persistently failing) isn't diagnostically dark.
       if (newMissCode(g_diag.subLastCode))
         applog::add("usage: strategy 0 retry miss (HTTP %d)", g_diag.subLastCode);
+      armQuickUpgrade(u, g_diag.subLastCode);   // bar still blank: try again next poll
       pollStep_ = PS_KNOWN; more = true; return false;
     }
 
@@ -396,6 +411,7 @@ inline bool pollStep(SessionUsage& u, bool& more) {
       int s = discoverS++;
       int r = tryStrategy(u, s);
       if (s == 0) discoverCode = g_diag.subLastCode;
+      if (r == 1 && s > 0) armQuickUpgrade(u, discoverCode);   // landed on a probe
       if (r == 1) { pollOk = true; pollStep_ = PS_PLAN; more = true; return false; }
       if (r < 0)  { pollStep_ = PS_AUTHFIX;             more = true; return false; }
       more = true; return false;          // stay here for the next strategy
